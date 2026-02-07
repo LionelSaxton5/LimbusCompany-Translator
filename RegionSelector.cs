@@ -1,7 +1,7 @@
 using Godot;
 using System;
 
-public partial class RegionSelector : Control //区域选择器(OCR识别半透明框)
+public partial class RegionSelector : Control //区域选择器(过渡OCR识别半透明框)
 {
 	private Vector2 _startPosition; //起始位置
     private Vector2 _endPosition; //结束位置
@@ -17,10 +17,10 @@ public partial class RegionSelector : Control //区域选择器(OCR识别半透�
 		MouseFilter = MouseFilterEnum.Stop; //阻止鼠标事件传递到下层节点
     }    
    	
-    public override void _Input(InputEvent @event) //处理输入事件
-    {
+    public override void _GuiInput(InputEvent @event) //处理输入事件
+    {       
         if (@event is InputEventMouseButton mouseButton) //检查鼠标按键
-        {
+        {           
             if (mouseButton.ButtonIndex == MouseButton.Left) //左键
             {
                 if (mouseButton.Pressed) //按下
@@ -43,6 +43,8 @@ public partial class RegionSelector : Control //区域选择器(OCR识别半透�
                     (int)Mathf.Abs(_endPosition.Y - _startPosition.Y) //高度
                     );
 
+                    GD.Print($"选区：{SelectedRegion}"); //打印选区信息
+
                     EmitSignal(nameof(RegionSelected)); //发出区域选择完成信号
                 }
             }
@@ -54,26 +56,13 @@ public partial class RegionSelector : Control //区域选择器(OCR识别半透�
                 _endPosition = mouseMotion.Position; //更新结束位置
                 QueueRedraw(); //请求重绘
             }
-        }
-        else if (@event is InputEventMouseButton mouseButtoned)
-        {
-            if (mouseButtoned.ButtonIndex == MouseButton.Left)
-            {
-                if (mouseButtoned.Pressed)
-                {
-                    var rect = new Rect2(SelectedRegion.Position, SelectedRegion.Size); //选区矩形
-                    if (!_isDragging && _hasSelection && rect.HasPoint(mouseButtoned.Position)) //检查是否点击在选区内
-                    {
-                        
-                    }
-                }
-            }
-        }
+        }      
     }
 
     public override void _Draw() //绘制区域
     {
         DrawRect(new Rect2(Vector2.Zero, GetViewportRect().Size), new Color(0, 0, 0, 0.3f), true);
+
         if ((_isDragging || _hasSelection) && _startPosition != _endPosition)
 		{
 			var rect = new Rect2(

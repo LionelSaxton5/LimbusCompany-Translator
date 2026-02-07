@@ -2,19 +2,24 @@ using Godot;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Threading.Tasks;
+using static Godot.Viewport;
 using static System.Formats.Asn1.AsnWriter;
 
 public partial class TranslationManager : Node //翻译管理器(集成)
 {
 	private Process _ocrProcess; //OCR进程
 	private const string OcRServerUrl = "http://127.0.0.1:1224/api/ocr"; //OCR服务器URL
+    private TranslationWindow translationWindow; //翻译窗口
 
-	private HttpRequest hTTPRequest; //HTTP请求节点
+    private HttpRequest hTTPRequest; //HTTP请求节点
+    private Button closeButton; //关闭按钮
+    private Button timeTranslationButton; //实时翻译按钮
 
     public override void _Ready()
 	{
-        
 		hTTPRequest = GetNode<HttpRequest>("HTTPRequest"); //获取HTTPRequest节点
+        timeTranslationButton = GetNode<Button>("VBoxContainer/TranslateButton"); //获取翻译按钮
+        closeButton = GetNode<Button>("CloseButton"); //获取关闭按钮
 
         if (hTTPRequest == null)
         {
@@ -25,7 +30,7 @@ public partial class TranslationManager : Node //翻译管理器(集成)
             GD.Print("HTTPRequest 节点获取成功。");
         }
         
-        StartUmiOcrService();
+        StartUmiOcrService();       
     }
 
 	public override void _Process(double delta)
@@ -71,8 +76,9 @@ public partial class TranslationManager : Node //翻译管理器(集成)
             _ocrProcess.StartInfo.Arguments = "http --port 1224"; //设置脚本路径参数,HTTP服务脚本
             _ocrProcess.StartInfo.UseShellExecute = false; //不使用外壳执行
             _ocrProcess.StartInfo.CreateNoWindow = true; //不创建窗口
+                                   
             _ocrProcess.Start(); //启动进程
-            GD.Print("Umi-OCR HTTP服务启动");
+            GD.Print("Umi-OCR HTTP服务已隐式启动");
         }
         catch (System.Exception ex)
         {
@@ -86,7 +92,7 @@ public partial class TranslationManager : Node //翻译管理器(集成)
 		GD.Print("捕获热键按下，开始截图并发送OCR请求");		
 		
         //创建获取屏幕截图
-        Image fullScreen = CaptureScreen();
+        Image fullScreen = CaptureScreen(); //捕获整个屏幕
 
         if (fullScreen == null)
         {
@@ -179,19 +185,30 @@ public partial class TranslationManager : Node //翻译管理器(集成)
 	{
 		return DisplayServer.ScreenGetImage(0); //捕获整个屏幕的图像
     }
-
 	private Image CaptureRegion(Image fullImage,int x, int y, int w, int h)
 	{
 		Rect2I rect2I = new Rect2I(x, y, w, h); //定义裁剪区域
         return fullImage.GetRegion(rect2I); //裁剪指定区域的图像
     }
-
 	private byte[] ImageToPngBytes(Image godotImage)
 	{
 		return godotImage.SavePngToBuffer(); //将Godot图像保存为PNG格式的字节数组
+    }	
+
+    private void OnTranslateButtonPressed() //实时翻译按钮
+    {
+        if (translationWindow != null && IsInstanceValid(translationWindow))
+        {
+            translationWindow.Show(); //显示已有的翻译窗口
+            translationWindow.GrabFocus(); //获取焦点
+            GD.Print("已有翻译窗口");
+            return;
+        }
+
+        GetOrCreateTranslationWindow();        
     }
-	
-	public override void _ExitTree()
+
+    public override void _ExitTree()
 	{
 		//退出时终止OCR进程
 		if (_ocrProcess != null && !_ocrProcess.HasExited)
@@ -201,5 +218,53 @@ public partial class TranslationManager : Node //翻译管理器(集成)
 			GD.Print("已终止Umi-OCR进程");
 		}
 		base._ExitTree(); //调用基类退出处理
+    }
+
+    public void OnCloseButtonPressed() //关闭按钮按下
+    {
+        GD.Print("关闭按钮按下");
+        this.QueueFree(); //销毁翻译管理器节点
+    }
+  
+    public TranslationWindow GetOrCreateTranslationWindow() //获取或创建翻译窗口
+    {
+        if (translationWindow != null && IsInstanceValid(translationWindow))
+        {
+            translationWindow.Show();
+            translationWindow.GrabFocus(); //获取焦点
+            return translationWindow;
+        }
+
+        var windowScene = GD.Load<PackedScene>("res://changjing/TranslationWindow.tscn");
+        if (windowScene == null)
+        {
+            GD.PrintErr("错误：无法加载 TranslationWindow 场景！");
+            return null;
+        }
+
+        translationWindow = windowScene.Instantiate<TranslationWindow>();
+        GetTree().Root.AddChild(translationWindow); //将翻译窗口添加到场景
+        translationWindow.Show();
+        return translationWindow;
+    }
+    
+    public TranslationWindow CurrentTranslationWindow => 
+        (translationWindow != null && IsInstanceValid(translationWindow)) ? translationWindow : null; //当前翻译窗口
+
+    public void HideTranslationWindow() //隐藏翻译窗口
+    {
+        if (translationWindow != null && IsInstanceValid(translationWindow))
+        {
+            translationWindow.Hide();
+        }
+    }
+    
+    public void DestroyTranslationWindow() //销毁翻译窗口
+    {
+        if (translationWindow != null && IsInstanceValid(translationWindow))
+        {
+            translationWindow.QueueFree();
+            translationWindow = null;
+        }
     }
 }
