@@ -44,7 +44,11 @@ public partial class TranslationManager : Node //翻译管理器(集成)
         {
             GD.PrintErr("错误：屏幕截图获取失败！");
             return;
-        }       
+        }
+
+        string savePath = ProjectSettings.GlobalizePath("user://ocr_capture.png");
+        fullScreen.SavePng(savePath);
+        GD.Print("截图已保存至: " + savePath);
 
         //转换字节流
         byte[] bytes = ImageToPngBytes(fullScreen);
@@ -139,5 +143,18 @@ public partial class TranslationManager : Node //翻译管理器(集成)
             translationWindow.QueueFree();
             translationWindow = null;
         }
+    }
+
+    public void OnMicrosoftCheckButtonToggled(bool pressed) //微软翻译启用切换
+    {      
+        GD.Print("微软翻译启用切换：" + pressed);
+        SaveManager.Instance.saveData.isMicrosofttranslationEnable = pressed;   
+        SaveManager.Instance.SaveDataToFile();
+    }
+
+    public void OnBaiduCheckButtonToggled(bool pressed) //百度翻译启用切换
+    {
+        SaveManager.Instance.saveData.isBaidutranslationEnable = pressed;
+        SaveManager.Instance.SaveDataToFile();
     }
 }

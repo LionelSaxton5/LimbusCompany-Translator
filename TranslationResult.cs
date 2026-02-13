@@ -88,7 +88,8 @@ public partial class TranslationResult : Control //翻译结果显示
         _selectionWindow.Unfocusable = false; //允许获取焦点
         _selectionWindow.Position = screenPos;    // 窗口位置设为屏幕起点
         _selectionWindow.Size = screenSize;       // 窗口大小设为全屏
-        _selectionWindow.PopupWindow = true;   //弹出窗口模式
+        _selectionWindow.PopupWindow = true;    // 弹出窗口
+        _selectionWindow.AlwaysOnTop = true;    // 窗口置顶
 
         // 创建选择器并添加到窗口
         var selectorPackedScene = GD.Load<PackedScene>("res://changjing/RegionUI.tscn");

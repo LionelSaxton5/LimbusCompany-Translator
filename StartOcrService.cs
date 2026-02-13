@@ -2,6 +2,8 @@ using Godot;
 using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using static SaveManager;
+using static System.Net.Mime.MediaTypeNames;
 
 public partial class StartOcrService : Node //启动OCR服务
 {
@@ -35,36 +37,63 @@ public partial class StartOcrService : Node //启动OCR服务
             }
         }
 
-        string exePath = OS.GetExecutablePath();  //获取Godot可执行文件路径
-        string exeDir = System.IO.Path.GetDirectoryName(exePath); //获取Godot可执行文件目录
-
-        string[] umiOcrPathList =
+        string OCRsavedPath = SaveManager.Instance.saveData.umiOcrPath; //从配置中获取保存的Umi-OCR路径
+        if (!string.IsNullOrWhiteSpace(OCRsavedPath) && System.IO.File.Exists(OCRsavedPath)) //如果路径有效且文件存在
         {
-        // 优先级1：与程序在同一目录的Umi-OCR文件夹
-            System.IO.Path.Combine(exeDir, "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
-        
-            // 优先级2：在程序目录的子目录中
-            System.IO.Path.Combine(exeDir, "tools", "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
-            System.IO.Path.Combine(exeDir, "ocr", "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
-        
-            // 优先级3：用户选择的路径（从配置文件读取）
-
-        
-            // 优先级4：在开发环境中的路径
-            @"D:\xiazai\Godot sucai\边狱翻译器\Umi-OCR_Rapid_v2.1.5\Umi-OCR.exe" //Umi-OCR可执行文件路径
-        };
-
-        string umiOcrPath = null;
-        foreach (var path in umiOcrPathList)
+            GD.Print($"使用保存的 Umi-OCR 路径: '{OCRsavedPath}'");
+        }
+        else
         {
-            if (System.IO.File.Exists(path))
+            string projectRootPath = ProjectSettings.GlobalizePath("res://");
+            string fontSourcePath = System.IO.Path.Combine(projectRootPath, "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe");
+            string exePath = OS.GetExecutablePath();  //获取Godot可执行文件路径
+            string exeDir = System.IO.Path.GetDirectoryName(exePath); //获取Godot可执行文件目录
+
+            string[] umiOcrPathList =
             {
-                umiOcrPath = path;
-                GD.Print($"找到Umi-OCR路径: {umiOcrPath}");
-                break;
+            // 优先级1：与程序在同一目录的Umi-OCR文件夹
+                System.IO.Path.Combine(exeDir, "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
+        
+                // 优先级2：在程序目录的子目录中
+                System.IO.Path.Combine(fontSourcePath),
+                System.IO.Path.Combine(exeDir,"..", "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
+                System.IO.Path.Combine(projectRootPath,  "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
+        
+                // 优先级3：用户选择的路径（从配置文件读取）
+
+        
+                // 优先级4：在开发环境中的路径
+                //@"D:\xiazai\Godot sucai\边狱翻译器\Umi-OCR_Rapid_v2.1.5\Umi-OCR.exe" //Umi-OCR可执行文件路径
+            };
+
+            string found = null;
+            foreach (var path in umiOcrPathList)
+            {
+                if (System.IO.File.Exists(path))
+                {
+                    found = path;                   
+                    GD.Print($"找到Umi-OCR路径: {found}");
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(found)) //如果找到有效路径
+            {
+                OCRsavedPath = found;
+
+                if (SaveManager.Instance != null && SaveManager.Instance.saveData != null)
+                {
+                    SaveManager.Instance.saveData.umiOcrPath = OCRsavedPath;
+                    SaveManager.Instance.SaveDataToFile();
+                }
+            }
+            else
+            {
+                ErrorWindow.ShowError("错误：未找到可用的 Umi-OCR 可执行文件。请在设置中手动指定路径。");
+                return;
             }
         }
-
+        
         if (_ocrProcess != null && !_ocrProcess.HasExited)
         {
             _ocrProcess.Kill(); //如果进程已存在且未退出，先终止它
@@ -74,8 +103,8 @@ public partial class StartOcrService : Node //启动OCR服务
         try
         {
             _ocrProcess = new Process(); //创建新进程
-            _ocrProcess.StartInfo.FileName = umiOcrPath; //设置可执行文件路径
-            _ocrProcess.StartInfo.Arguments = "http --port 1224"; //设置脚本路径参数,HTTP服务脚本
+            _ocrProcess.StartInfo.FileName = OCRsavedPath; //设置可执行文件路径
+            _ocrProcess.StartInfo.Arguments = "http --port 1224 --lang jpn"; ; //设置脚本路径参数,HTTP服务脚本
             _ocrProcess.StartInfo.UseShellExecute = false; //不使用外壳执行
             _ocrProcess.StartInfo.CreateNoWindow = true; //不创建窗口
 
@@ -85,7 +114,7 @@ public partial class StartOcrService : Node //启动OCR服务
         catch (System.Exception ex)
         {
             GD.PrintErr($"错误：无法启动Umi-OCR服务 - {ex.Message}");
-            GD.PrintErr($"请检查路径是否正确: {umiOcrPath}");
+            GD.PrintErr($"请检查路径是否正确: {OCRsavedPath}");
         }
     }
 
@@ -143,6 +172,7 @@ public partial class StartOcrService : Node //启动OCR服务
             }
 
             string alltext = allText.ToString(); //获取所有文本字符串
+            GD.Print($"识别到的文本:\n{alltext}");
 
             TranslationSource.Instance.GetText(alltext); //发送文本进行翻译
         }
