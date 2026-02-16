@@ -102,14 +102,10 @@ public partial class TranslationResult : Control //翻译结果显示
         // 添加窗口到场景树并显示
         GetTree().Root.AddChild(_selectionWindow);
         _selectionWindow.Show();
-
-        GD.Print("选择窗口已创建");
     }
 
     private void OnRegionSelected()
     {
-        GD.Print("区域选择完成");
-
         Rect2I region = _selector.SelectedRegion;
 
         _selectionWindow.RemoveChild(_selector); //移除选择器

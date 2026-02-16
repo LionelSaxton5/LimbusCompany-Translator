@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 public partial class GetGame : Node //获取边狱巴士游戏路径
 {
@@ -25,9 +26,10 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 
     private bool isFileOperated = false; //文件是否已操作标志
     private InlineTranslation inlineTranslation; //内嵌式翻译节点引用
+    private ProgressWindow progressWindow; //进度窗口节点引用
 
     public override void _Ready()
-	{
+	{       
         try
         {
             if (SaveManager.Instance != null && SaveManager.Instance.saveData != null &&
@@ -69,10 +71,10 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
     public void OnGetMainStorylineOriginalText() //获取主线原文
     {
         OperateFile(); //操作文件
-
+       
         if (!isFileOperated)
         {
-            GD.PrintErr("文件操作未成功，无法获取故事文件");
+            ErrorWindow.ShowError("文件操作未成功，无法获取故事文件");
             return;
         }
         List<string> storyFiles = FindStoryFiles(selectedChapter, selectedLevel); //查找故事文件
@@ -85,20 +87,77 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 
         inlineTranslation = GetParent() as InlineTranslation; //获取InlineTranslation节点引用
         inlineTranslation.StartBatchTranslation(allFiles); //加载原文
+
+        if (progressWindow != null && !progressWindow.IsQueuedForDeletion())
+        {
+            progressWindow.QueueFree();
+            progressWindow = null;
+        }
+
+        var progressScene = GD.Load<PackedScene>("res://changjing/ProgressWindow.tscn"); //显示汉化进度窗口
+        if (progressScene != null)
+        {
+            progressWindow = progressScene.Instantiate<ProgressWindow>();
+            // 订阅进度事件
+            inlineTranslation.OnProgressUpdated += progressWindow.OnProgressBarValueChanged;
+            // 窗口关闭时自动取消订阅
+            progressWindow.CloseRequested += () =>
+            {
+                inlineTranslation.OnProgressUpdated -= progressWindow.OnProgressBarValueChanged;
+                progressWindow.QueueFree();
+                progressWindow = null;
+            };
+            GetTree().Root.AddChild(progressWindow);
+            progressWindow.Show();
+        }
     }
 
     public void OnGetInterludeOriginalText() //获取间章原文
     {
         OperateFile(); //操作文件
+               
         if (!isFileOperated)
         {
-            GD.PrintErr("文件操作未成功，无法获取间章文件");
+            ErrorWindow.ShowError("文件操作未成功，无法获取间章文件");
             return;
         }
 
         List<string> interludeFiles = FindInterludePlot(interludeSelectedChapter, interludeSelectedLevel); //查找间章剧情文件
+
+        if (interludeFiles != null)
+        {
+            GD.Print($"找到 {interludeFiles.Count} 个间章文件:");            
+        }
+        else
+        {
+            ErrorWindow.ShowError("未找到任何间章文件");
+        }
+
         inlineTranslation = GetParent() as InlineTranslation; //获取InlineTranslation节点引用
         inlineTranslation.StartBatchTranslation(interludeFiles); //加载原文
+
+        if (progressWindow != null && !progressWindow.IsQueuedForDeletion())
+        {
+            progressWindow.QueueFree();
+            progressWindow = null;
+        }
+
+        var progressScene = GD.Load<PackedScene>("res://changjing/ProgressWindow.tscn");
+        if (progressScene != null)
+        {
+            progressWindow = progressScene.Instantiate<ProgressWindow>();
+            // 订阅进度事件
+            inlineTranslation.OnProgressUpdated += progressWindow.OnProgressBarValueChanged;
+            // 窗口关闭时自动取消订阅
+            progressWindow.CloseRequested += () =>
+            {
+                inlineTranslation.OnProgressUpdated -= progressWindow.OnProgressBarValueChanged;
+                progressWindow.QueueFree();
+                progressWindow = null;
+            };
+            GetTree().Root.AddChild(progressWindow);
+            progressWindow.Show();
+        }
     }
 
     //章节和关卡值变化处理
@@ -184,32 +243,17 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 
             if (string.IsNullOrEmpty(gameInstallPath))
             {
-                GD.PrintErr("无法获取游戏安装路径");
+                ErrorWindow.ShowError("无法获取游戏安装路径");
                 return;
             }
         }
 
         GD.Print($"=== 开始操作文件 ===");
-        GD.Print($"游戏路径: {gameInstallPath}");
 
+        SyncLanguageFiles();
 
         //复制语言文件,改名
-        string Document = System.IO.Path.Combine(gameInstallPath, "LimbusCompany_Data", "Lang", "Jp_zh-cn"); //目标文件路径
-
-        if (!Directory.Exists(Document)) //检查目标文件是否存在
-		{
-			GD.Print("文件不存在，开始复制语言文件...");
-            string filePath = System.IO.Path.Combine(gameInstallPath, "LimbusCompany_Data", "Assets", "Resources_moved", "Localize", "jp"); //源文件路径
-
-			if (Directory.Exists(filePath))
-			{
-                CopyDirectoryRecursive(filePath, Document); //复制文件并覆盖
-            }
-            else
-            {
-                GD.PrintErr($"源语言文件路径不存在: {filePath}");
-            }          
-        }
+        string Document = System.IO.Path.Combine(gameInstallPath, "LimbusCompany_Data", "Lang", "Jp_zh-cn"); //目标文件路径              
 
         //复制字体文件
         string fontDocument = System.IO.Path.Combine(Document, "Font"); //字体文件路径
@@ -255,7 +299,7 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
             }
             else
             {
-                GD.PrintErr("未找到任何字体文件路径");
+                ErrorWindow.ShowError("未找到任何字体文件路径");
             }
         }
 
@@ -285,8 +329,19 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
                 string fullPath = Path.Combine(storyDataPath, pattern); //构建完整文件路径
 
                 if (File.Exists(fullPath)) //如果文件存在
-                {                    
-                    result.Add(fullPath);
+                {
+                    string newfileName = Path.Combine(storyDataPath, $"S{currentNumber}{suffix}.json");
+                    try
+                    {
+                        File.Move(fullPath, newfileName); //改名操作
+                        result.Add(newfileName);
+                    }
+                    catch (Exception ex)
+                    {
+                        GD.PrintErr($"重命名文件失败: {ex.Message}");
+                        result.Add(fullPath);
+                    }
+
                     foundFilesForThisNumber = true; //标记找到文件
                 }
                 if(suffix == 'I') //处理特殊的 I 文件情况
@@ -299,7 +354,18 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
                         string numberedFullPath = Path.Combine(storyDataPath, numbered);
                         if (File.Exists(numberedFullPath))
                         {
-                            result.Add(numberedFullPath);
+                            string newfileName = Path.Combine(storyDataPath, $"S{currentNumber}I{idx}.json");
+                            try
+                            {
+                                File.Move(numberedFullPath, newfileName); //改名操作
+                                result.Add(newfileName);
+                            }
+                            catch (Exception ex)
+                            {
+                                GD.PrintErr($"重命名文件失败: {ex.Message}");
+                                result.Add(numberedFullPath);
+                            }
+
                             foundFilesForThisNumber = true; //标记找到文件
                             idx++;
                         }
@@ -365,7 +431,17 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 
                     if (File.Exists(fullPath))
                     {
-                        result.Add(fullPath);
+                        string newfileName = Path.Combine(storyDataPath, $"{chapter}D{currentNumber}{suffix}.json");
+                        try
+                        {
+                            File.Move(fullPath, newfileName); //改名操作
+                            result.Add(newfileName);
+                        }
+                        catch (Exception ex)
+                        {
+                            GD.PrintErr($"重命名文件失败: {ex.Message}");
+                            result.Add(fullPath);
+                        }
                     }
                     if (suffix == 'I')
                     {
@@ -377,7 +453,18 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
                             string numberedFullPath = Path.Combine(storyDataPath, numbered);
                             if (File.Exists(numberedFullPath))
                             {
-                                result.Add(numberedFullPath);
+                                string newfileName = Path.Combine(storyDataPath, $"{chapter}D{currentNumber}I{idx}.json");
+                                try
+                                {
+                                    File.Move(numberedFullPath, newfileName); //改名操作
+                                    result.Add(newfileName);
+                                }
+                                catch (Exception ex)
+                                {
+                                    GD.PrintErr($"重命名文件失败: {ex.Message}");
+                                    result.Add(numberedFullPath);
+                                }
+
                                 idx++;
                             }
                             else
@@ -396,25 +483,38 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
     public List<string> FindInterludePlot(int chapter, int startLevel) //查找间章剧情文件
     {
         List<string> result = new List<string>();
-
-        int currentNumber = chapter * 100 + startLevel; //计算当前章节和关卡的数字表示，例如 801
+        
         string storyDataPath = Path.Combine(gameInstallPath, "LimbusCompany_Data", "Lang", "Jp_zh-cn", "StoryData"); //故事数据文件夹路径
 
         if (!Directory.Exists(storyDataPath))
             return new List<string>(); //如果目录不存在，返回空列表
 
-        while (true)
+        int currentNumber = chapter * 100 + startLevel; //计算当前章节和关卡的数字表示，例如 801
+        int maxNumber = chapter * 100 + 99;  //设置一个合理的最大关卡数，防止无限循环
+
+        while (currentNumber <= maxNumber)
         {
             bool foundFilesForThisNumber = false;
 
             foreach (char suffix in new char[] { 'A', 'B', 'I' })
             {
-                string pattern = $"JP_E{currentNumber}*.json"; //构建文件名模式，例如 "JP_E801A.json"
-                string fllPath = Path.Combine(storyDataPath, "pattern");
+                string pattern = $"JP_E{currentNumber}{suffix}.json"; //构建文件名模式，例如 "JP_E801A.json"
+                string fllPath = Path.Combine(storyDataPath, pattern);
 
                 if (File.Exists(fllPath)) //如果文件存在
                 {
-                    result.Add(fllPath);
+                    string newfileName = Path.Combine(storyDataPath, $"E{currentNumber}{suffix}.json"); //改名
+
+                    try
+                    {
+                        File.Move(fllPath, newfileName); //改名操作
+                        result.Add(newfileName);                       
+                    }
+                    catch (Exception ex)
+                    {
+                        GD.PrintErr($"重命名文件失败: {ex.Message}");
+                        result.Add(fllPath); // 如果重命名失败，仍然添加原文件
+                    }
                     foundFilesForThisNumber = true; //标记找到文件
                 }
                 if (suffix == 'I')
@@ -427,7 +527,19 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
                         string numberedFullPath = Path.Combine(storyDataPath, numbered);
                         if (File.Exists(numberedFullPath))
                         {
-                            result.Add(numberedFullPath);
+                            string newfileName = Path.Combine(storyDataPath, $"E{currentNumber}I{idx}.json"); //改名
+
+                            try
+                            {
+                                File.Move(numberedFullPath, newfileName); //改名操作
+                                result.Add(newfileName);
+                            }
+                            catch (Exception ex)
+                            {
+                                GD.PrintErr($"重命名文件失败: {ex.Message}");
+                                result.Add(numberedFullPath); // 如果重命名失败，仍然添加原文件
+                            }
+
                             foundFilesForThisNumber = true; //标记找到文件
                             idx++;
                         }
@@ -440,25 +552,17 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
             }
             if (!foundFilesForThisNumber) //如果没有找到任何文件，停止搜索
             {
-                currentNumber += 1; //增加关卡数字，例如从801增加到802
-                int newChapter = currentNumber / 100; //计算当前章节
-                if (newChapter > chapter)
-                {
-                    GD.Print($"到达下一章节 {newChapter}，停止搜索");
-                    break;
-                }
                 // 防止无限循环
-                if (currentNumber > (chapter * 100 + 18)) // 假设每章最多18关
+                if (!CheckNextNumberExists(currentNumber, storyDataPath))
                 {
-                    GD.Print($"超过最大关卡数，停止搜索");
+                    GD.Print($"未找到下一关卡文件，停止搜索");
                     break;
                 }
+
+                currentNumber += 1; //增加关卡数字，例如从801增加到802              
             }
-            else
-            {
-                // 找到文件，继续检查下一个数字
-                currentNumber++;
-            }
+            
+            currentNumber++; //继续检查下一个数字
         }
 
         return result;
@@ -474,11 +578,7 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
         foreach (string file in Directory.GetFiles(sourceDir))
         {
             string destFile = Path.Combine(destDir, Path.GetFileName(file)); //目标文件路径
-
-            if (File.Exists(destFile))
-            {
-                continue; //如果文件已存在，跳过
-            }
+           
             File.Copy(file, destFile, true); //复制文件并覆盖
         }
 
@@ -486,11 +586,7 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
         foreach (string dir in Directory.GetDirectories(sourceDir))
         {
             string destSubDir = Path.Combine(destDir, Path.GetFileName(dir));
-
-            if (File.Exists(destSubDir))
-            {
-                continue; //如果文件已存在，跳过
-            }
+           
             CopyDirectoryRecursive(dir, destSubDir);
         }
     }
@@ -501,7 +597,6 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
         {
             string jsonFilePath = Path.Combine(gameInstallPath, "LimbusCompany_Data", "Lang", "config.json");
             GD.Print($"配置文件路径: {jsonFilePath}");
-            GD.Print($"配置文件是否存在: {File.Exists(jsonFilePath)}");
 
             if (File.Exists(jsonFilePath)) //如果文件存在
             {
@@ -546,5 +641,69 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
         {
             GD.PrintErr($"更新配置文件失败: {ex.Message}");
         }
-    }   
+    }
+
+    private bool CheckNextNumberExists(int num, string dir)
+    {
+        // 简单检查下两个数字的 A/B/I 是否存在
+        int next = num + 1;
+        int maxnext = num + 2;
+
+        return File.Exists(Path.Combine(dir, $"JP_E{next}A.json")) ||
+               File.Exists(Path.Combine(dir, $"JP_E{next}B.json")) ||
+               File.Exists(Path.Combine(dir, $"JP_E{next}I.json")) ||
+               File.Exists(Path.Combine(dir, $"JP_E{maxnext}A.json")) ||
+               File.Exists(Path.Combine(dir, $"JP_E{maxnext}B.json")) ||
+               File.Exists(Path.Combine(dir, $"JP_E{maxnext}I.json"));
+    }
+
+    private void SyncLanguageFiles() //同步语言文件，更新新文件并保留已汉化文件
+    {
+        string sourceRoot = Path.Combine(gameInstallPath, "LimbusCompany_Data", "Assets", "Resources_moved", "Localize", "jp"); //源语言文件根目录
+        string targetRoot = Path.Combine(gameInstallPath, "LimbusCompany_Data", "Lang", "Jp_zh-cn"); //目标语言文件根目录
+
+        if (!Directory.Exists(sourceRoot))
+        {
+            GD.PrintErr($"源目录不存在: {sourceRoot}");
+            return;
+        }
+
+        Directory.CreateDirectory(targetRoot); //确保目标目录存在
+                                               
+        var allSourceFiles = Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories);// 获取所有源文件（包括子目录）
+
+        foreach (string sourceFile in allSourceFiles)
+        {
+            string fileName = Path.GetFileName(sourceFile); //获取文件名
+            if (!fileName.StartsWith("JP_")) //只处理以 "JP_" 开头的文件
+                continue;
+
+           string fileNameWithoutPrefix = fileName.Substring(3); //去掉 "JP_" 前缀
+
+            // 计算相对路径（保持目录结构）
+            string relativePath = Path.GetRelativePath(sourceRoot, sourceFile); //相对于源根目录的路径
+            string relativeDir = Path.GetDirectoryName(relativePath) ?? ""; //相对于源根目录的目录
+
+            string targetFileWithoutPrefix = Path.Combine(targetRoot, relativeDir, fileNameWithoutPrefix); //目标文件路径（去掉前缀）
+
+            if (File.Exists(targetFileWithoutPrefix)) //如果目标文件已存在,则以汉化
+            {
+                continue; //如果目标文件已存在，跳过
+            }
+
+            // 目标 JP_ 文件路径（与源相对路径一致）
+            string targetJpFileToCopy = Path.Combine(targetRoot, relativePath);
+            // 如果目标 JP_ 文件已存在
+            if (File.Exists(targetJpFileToCopy))
+                continue;
+
+            // 确保目标目录存在
+            string targetDir = Path.GetDirectoryName(targetJpFileToCopy);
+            Directory.CreateDirectory(targetDir);
+
+            // 复制源文件到目标（保留原名 JP_）
+            File.Copy(sourceFile, targetJpFileToCopy, false); // false = 不覆盖
+            GD.Print($"新增 JP_ 文件: {relativePath}");
+        }
+    }
 }

@@ -11,6 +11,7 @@ public partial class TranslationManager : Node //翻译管理器(集成)
 
     //OCR服务相关
     private StartOcrService startOcrService; //OCR服务启动节点
+    private PaddleOcrService paddleOcrService; //PaddleOCR服务节点
 
     //窗口相关
     private TranslationWindow translationWindow; //翻译窗口
@@ -22,43 +23,52 @@ public partial class TranslationManager : Node //翻译管理器(集成)
 
     public override void _Ready()
 	{
-        startOcrService = GetNode<StartOcrService>("StartOCRService"); //获取启动OCR服务节点       
-             
-        startOcrService.StartUmiOcrService();  //启动Umi-OCR服务     
-    }
-   
-	private void OnCaptureHotkeyPressed() //捕获热键按下时的处理函数
-    {
-		GD.Print("捕获热键按下，开始截图并发送OCR请求");
+        startOcrService = GetNode<StartOcrService>("StartOCRService"); //获取启动OCR服务节点
+        paddleOcrService = GetNode<PaddleOcrService>("PaddleOcrService"); //获取PaddleOCR服务节点                                                             
 
+        if (SaveManager.Instance.saveData.isUmiOcrEnable)
+        {
+            startOcrService.StartUmiOcrService(); //根据保存的数据决定是否启动OCR服务
+        }
+        else if(SaveManager.Instance.saveData.isPaddleOcrEnable)
+        {
+            paddleOcrService.InitializeEngine(); //根据保存的数据决定是否初始化PaddleOCR引擎
+        }
+    }
+
+    private void OnCaptureHotkeyPressed() //捕获热键按下时的处理函数
+    {
         if (!_hasValidRegion)
         {
-            GD.PrintErr("错误：没有有效的OCR区域，请先使用绘制按钮选择区域");
+            ErrorWindow.ShowError("错误：没有有效的OCR区域，请先使用绘制按钮选择区域");
             return;
-        }       
+        }
 
         //创建获取屏幕截图
         Image fullScreen = CaptureRegion(_lastSelectedRegion); //捕获指定区域的屏幕截图
 
         if (fullScreen == null)
         {
-            GD.PrintErr("错误：屏幕截图获取失败！");
+            ErrorWindow.ShowError("错误：屏幕截图获取失败！");
             return;
         }
-
-        string savePath = ProjectSettings.GlobalizePath("user://ocr_capture.png");
-        fullScreen.SavePng(savePath);
-        GD.Print("截图已保存至: " + savePath);
 
         //转换字节流
         byte[] bytes = ImageToPngBytes(fullScreen);
         if (bytes == null || bytes.Length == 0)
         {
-            GD.PrintErr("错误：图像转换为字节流失败！");
+            ErrorWindow.ShowError("错误：图像转换为字节流失败！");
             return;
         }
 
-        startOcrService.SendToUmiOcr(bytes);//发送OCR请求       
+        if (SaveManager.Instance.saveData.isUmiOcrEnable)
+        {
+            startOcrService.SendToUmiOcr(bytes);//发送OCR请求       
+        }
+        else if (SaveManager.Instance.saveData.isPaddleOcrEnable)
+        {
+            paddleOcrService.Recognize(bytes); //发送OCR请求
+        }
     }
 
     public void SetSelectedRegion(Rect2I region)
@@ -84,7 +94,7 @@ public partial class TranslationManager : Node //翻译管理器(集成)
         {
             translationWindow.Show(); //显示已有的翻译窗口
             translationWindow.GrabFocus(); //获取焦点
-            GD.Print("已有翻译窗口");
+            ErrorWindow.ShowError("已有翻译窗口");
             return;
         }
 
@@ -147,7 +157,6 @@ public partial class TranslationManager : Node //翻译管理器(集成)
 
     public void OnMicrosoftCheckButtonToggled(bool pressed) //微软翻译启用切换
     {      
-        GD.Print("微软翻译启用切换：" + pressed);
         SaveManager.Instance.saveData.isMicrosofttranslationEnable = pressed;   
         SaveManager.Instance.SaveDataToFile();
     }

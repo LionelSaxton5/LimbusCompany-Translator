@@ -19,7 +19,12 @@ public partial class SaveManager : Node
 	public class SaveData
 	{
 		public string umiOcrPath { get; set; } = ""; //Umi-OCR路径
-		public string gameExePath { get; set; } = ""; //游戏可执行文件路径
+		public bool isUmiOcrEnable { get; set; } = false; //是否启用Umi-OCR
+		public string paddleOcrDetPathEPath { get; set; } = ""; //paddle-OCR检测模型路径
+		public string paddleOcrRecPath { get; set; } = ""; //paddle-OCR识别模型路径
+		public string paddleOcrKeysPath { get; set; } = ""; //paddle-OCR字符集路径
+        public bool isPaddleOcrEnable { get; set; } = false; //是否启用paddle-OCR
+        public string gameExePath { get; set; } = ""; //游戏可执行文件路径
 
 		public string MicrosofttranslationKey { get; set; } = ""; //微软翻译API密钥
 		public string MicrosoftranslationUrl { get; set; } = ""; //微软翻译API端点
@@ -28,14 +33,17 @@ public partial class SaveManager : Node
 		public string BaidutranslationKey { get; set; } = ""; //百度翻译API密钥
 		public string BaidutranslationUrl { get; set; } = ""; //百度翻译API端点
 		public bool isBaidutranslationEnable { get; set; } = false; //百度翻译是否启用
-	}
+
+		public string TengxuntranslationKey { get; set; } = ""; //腾讯翻译API密钥
+		public string TengxuntranslationUrl { get; set; } = ""; //腾讯翻译API端点
+		public bool isTengxuntranslationEnable { get; set; } = false; //腾讯翻译是否启用
+    }
 
 	public SaveData saveData = new SaveData();
 	private const string savePath = "user://save_data.json"; //保存文件路径
 
 	public void SaveDataToFile() //保存数据到文件
 	{
-        GD.Print("保存路径: " + ProjectSettings.GlobalizePath(savePath));
         try
 		{
             var options = new JsonSerializerOptions { WriteIndented = true }; // 美化输出的JSON格式
@@ -45,7 +53,6 @@ public partial class SaveManager : Node
 			{
 				file.StoreString(jsonString); //将JSON字符串写入文件
 				file.Close(); //关闭文件
-				GD.Print("配置保存成功");
             }
 		}
 		catch (Exception ex)
@@ -56,7 +63,6 @@ public partial class SaveManager : Node
 
 	public void LoadData() //加载保存数据
 	{
-        GD.Print("加载路径: " + ProjectSettings.GlobalizePath(savePath));
         try
 		{
 			if (!FileAccess.FileExists(savePath))

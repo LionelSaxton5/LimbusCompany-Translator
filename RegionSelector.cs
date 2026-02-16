@@ -43,8 +43,6 @@ public partial class RegionSelector : Control //区域选择器(过渡OCR识别�
                     (int)Mathf.Abs(_endPosition.Y - _startPosition.Y) //高度
                     );
 
-                    GD.Print($"选区：{SelectedRegion}"); //打印选区信息
-
                     EmitSignal(nameof(RegionSelected)); //发出区域选择完成信号(连接到TranslationResult中的OnRegionSelected)
                 }
             }

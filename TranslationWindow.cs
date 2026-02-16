@@ -44,119 +44,98 @@ public partial class TranslationWindow : Window //翻译窗口
 	public override void _Process(double delta)
 	{
 		// 检查鼠标位置并设置光标形状
-		Vector2 mousePos = DisplayServer.MouseGetPosition();
-		Rect2I windowRect = new Rect2I(Position, Size);
-		
-		if (windowRect.HasPoint((Vector2I)mousePos))
-		{
-			ResizeDirection dir = GetResizeDirection(mousePos);
-			if (dir != ResizeDirection.None)
-			{
-				DisplayServer.CursorSetShape(GetCursorShapeForDirection(dir));
-			}
-			else
-			{
-				DisplayServer.CursorSetShape(DisplayServer.CursorShape.Arrow);
-			}
-		}
-		else
-		{
-			DisplayServer.CursorSetShape(DisplayServer.CursorShape.Arrow);
-		}
-	}
+		Vector2 mousePos = DisplayServer.MouseGetPosition(); //获取鼠标位置
+        ResizeDirection dir = GetResizeDirection(mousePos);
 
-	public override void _Input(InputEvent @event)
-	{
-		if (@event is InputEventMouseButton mouseButton)
-		{
-			//GD.Print($"TranslationWindow: ButtonIndex={mouseButton.ButtonIndex}, Pressed={mouseButton.Pressed}, Position={mouseButton.Position}, GlobalPosition={mouseButton.GlobalPosition}");
-			if (mouseButton.ButtonIndex == MouseButton.Left)
-			{
-				if (mouseButton.Pressed)
-				{
-					var localPos = mouseButton.Position;
+        if (dir != ResizeDirection.None)
+            DisplayServer.CursorSetShape(GetCursorShapeForDirection(dir));
+        else
+            DisplayServer.CursorSetShape(DisplayServer.CursorShape.Arrow);
+    }
 
-					if (localPos.X >= 0 && localPos.X <= Size.X &&
-						localPos.Y >= 0 && localPos.Y <= Size.Y)
-					{
-                        resizeDirection = GetResizeDirection(mouseButton.GlobalPosition);
+    public override void _Input(InputEvent @event)
+    {
+        // 获取鼠标在屏幕上的绝对坐标，统一坐标系
+        Vector2 screenMousePos = DisplayServer.MouseGetPosition();
 
-						if (resizeDirection == ResizeDirection.None)
-						{
-							isDragging = true;
-							dragOffset = mouseButton.GlobalPosition - (Vector2)Position; //记录鼠标按下时的偏移量
-                        }
-						else
-						{
-                            isResizing = true;                            
-                            originalPosition = Position;
-                            originalSize = Size;
-                            dragOffset = mouseButton.GlobalPosition; //记录鼠标按下时的位置
-                        }
-					}
-				}
-				else
-				{
-					isDragging = false; //停止拖拽
-					isResizing = false; //停止调整大小
+        if (@event is InputEventMouseButton mouseButton)
+        {
+            if (mouseButton.ButtonIndex == MouseButton.Left)
+            {
+                if (mouseButton.Pressed)
+                {
+                    //使用屏幕绝对坐标来判断方向
+                    resizeDirection = GetResizeDirection(screenMousePos);
+
+                    if (resizeDirection != ResizeDirection.None)
+                    {
+                        //边缘区域：开始调整大小
+                        isResizing = true;
+                        originalPosition = Position;
+                        originalSize = Size;
+                        dragOffset = screenMousePos; // 记录按下的屏幕坐标
+                    }
+                    else
+                    {
+                        //内容区域：开始拖拽
+                        isDragging = true;
+                        dragOffset = screenMousePos - (Vector2)Position; // 计算鼠标与窗口左上角的偏移量
+                    }
+                }
+                else
+                {
+                    isDragging = false;
+                    isResizing = false;
                     resizeDirection = ResizeDirection.None;
                 }
-			}
-		}
-		else if (@event is InputEventMouseMotion mouseMotion)
-		{
+            }
+        }
+        else if (@event is InputEventMouseMotion mouseMotion)
+        {
             if (isResizing)
-			{
-				ResizeWindow(mouseMotion.GlobalPosition);
+            {
+                // 调整大小时也传入屏幕绝对坐标
+                ResizeWindow(screenMousePos);
             }
             else if (isDragging)
-			{
-				Position = (Vector2I)(mouseMotion.GlobalPosition - dragOffset); //更新窗口位置
-			}
-		}
-	}
+            {
+                Position = (Vector2I)(screenMousePos - dragOffset);
+            }
+        }
+    }
 
-	private ResizeDirection GetResizeDirection(Vector2 mousePos) //调整边框大小
+    private ResizeDirection GetResizeDirection(Vector2 mousePos) //调整边框大小
 	{
-		Rect2I rect2I = new Rect2I(Position, Size);
+        Rect2I windowRect = new Rect2I(Position, Size);
 
-        if (rect2I.HasPoint((Vector2I)mousePos))
-		{
-			//检测鼠标位置以确定调整方向
-			if (Mathf.Abs(mousePos.X - rect2I.Position.X) <= resizeBorderThickness && Mathf.Abs(mousePos.Y - rect2I.Position.Y) > resizeBorderThickness && Mathf.Abs(mousePos.Y - (rect2I.Position.Y + rect2I.Size.Y)) > resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.Left; //左
-			}
-			else if (Mathf.Abs(mousePos.X - (rect2I.Position.X + rect2I.Size.X)) <= resizeBorderThickness && Mathf.Abs(mousePos.Y - rect2I.Position.Y) > resizeBorderThickness && Mathf.Abs(mousePos.Y - (rect2I.Position.Y + rect2I.Size.Y)) > resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.Right; //右
-			}
-			else if (Mathf.Abs(mousePos.Y - rect2I.Position.Y) <= resizeBorderThickness && Mathf.Abs(mousePos.X - rect2I.Position.X) > resizeBorderThickness && Mathf.Abs(mousePos.X - (rect2I.Position.X + rect2I.Size.X)) > resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.Top;  //上
-			}
-			else if (Mathf.Abs(mousePos.Y - (rect2I.Position.Y + rect2I.Size.Y)) <= resizeBorderThickness && Mathf.Abs(mousePos.X - rect2I.Position.X) > resizeBorderThickness && Mathf.Abs(mousePos.X - (rect2I.Position.X + rect2I.Size.X)) > resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.Bottom; //下
-			}
-			else if (Mathf.Abs(mousePos.X - rect2I.Position.X) <= resizeBorderThickness && Mathf.Abs(mousePos.Y - rect2I.Position.Y) <= resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.TopLeft; //左上
-			}
-			else if (Mathf.Abs(mousePos.X - (rect2I.Position.X + rect2I.Size.X)) <= resizeBorderThickness && Mathf.Abs(mousePos.Y - rect2I.Position.Y) <= resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.TopRight; //右上
-			}
-			else if (Mathf.Abs(mousePos.X - rect2I.Position.X) <= resizeBorderThickness && Mathf.Abs(mousePos.Y - (rect2I.Position.Y + rect2I.Size.Y)) <= resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.BottomLeft; //左下
-			}
-			else if (Mathf.Abs(mousePos.X - (rect2I.Position.X + rect2I.Size.X)) <= resizeBorderThickness && Mathf.Abs(mousePos.Y - (rect2I.Position.Y + rect2I.Size.Y)) <= resizeBorderThickness)
-			{
-				resizeDirection = ResizeDirection.BottomRight; //右下
-			}
-		}
-        return resizeDirection;	
+        //鼠标不在窗口内,无调整方向
+        if (!windowRect.HasPoint((Vector2I)mousePos))
+            return ResizeDirection.None;
+
+        //计算到各边的距离
+        float distLeft = Mathf.Abs(mousePos.X - windowRect.Position.X); //鼠标到左边的距离
+        float distRight = Mathf.Abs(mousePos.X - (windowRect.Position.X + windowRect.Size.X)); //鼠标到右边的距离
+        float distTop = Mathf.Abs(mousePos.Y - windowRect.Position.Y); //鼠标到上边的距离
+        float distBottom = Mathf.Abs(mousePos.Y - (windowRect.Position.Y + windowRect.Size.Y)); //鼠标到下边的距离
+
+        bool nearLeft = distLeft <= resizeBorderThickness; //是否靠近左边
+        bool nearRight = distRight <= resizeBorderThickness; //是否靠近右边
+        bool nearTop = distTop <= resizeBorderThickness;  //是否靠近上边
+        bool nearBottom = distBottom <= resizeBorderThickness;  //是否靠近下边
+
+        // 角优先（同时靠近两条边）
+        if (nearTop && nearLeft) return ResizeDirection.TopLeft; //靠近左上角
+        if (nearTop && nearRight) return ResizeDirection.TopRight;  //靠近右上角
+        if (nearBottom && nearLeft) return ResizeDirection.BottomLeft;  //靠近左下角
+        if (nearBottom && nearRight) return ResizeDirection.BottomRight; //靠近右下角
+
+        // 单边（确保只靠近一条边）
+        if (nearLeft && !nearTop && !nearBottom) return ResizeDirection.Left; //靠近左边
+        if (nearRight && !nearTop && !nearBottom) return ResizeDirection.Right; //靠近右边
+        if (nearTop && !nearLeft && !nearRight) return ResizeDirection.Top; //靠近上边
+        if (nearBottom && !nearLeft && !nearRight) return ResizeDirection.Bottom; //靠近下边
+
+        return ResizeDirection.None;
     }
 
 	private void ResizeWindow(Vector2 mousePos)

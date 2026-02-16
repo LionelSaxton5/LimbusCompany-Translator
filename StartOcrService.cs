@@ -13,7 +13,7 @@ public partial class StartOcrService : Node //启动OCR服务
     private HttpRequest hTTPRequest; //HTTP请求节点(发送OCR请求)
 
     public override void _Ready()
-	{
+    {
         hTTPRequest = GetNode<HttpRequest>("HTTPRequest"); //获取HTTPRequest节点
     }
 
@@ -57,13 +57,7 @@ public partial class StartOcrService : Node //启动OCR服务
                 // 优先级2：在程序目录的子目录中
                 System.IO.Path.Combine(fontSourcePath),
                 System.IO.Path.Combine(exeDir,"..", "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
-                System.IO.Path.Combine(projectRootPath,  "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),
-        
-                // 优先级3：用户选择的路径（从配置文件读取）
-
-        
-                // 优先级4：在开发环境中的路径
-                //@"D:\xiazai\Godot sucai\边狱翻译器\Umi-OCR_Rapid_v2.1.5\Umi-OCR.exe" //Umi-OCR可执行文件路径
+                System.IO.Path.Combine(projectRootPath,  "Umi-OCR_Rapid_v2.1.5", "Umi-OCR.exe"),      
             };
 
             string found = null;
@@ -71,7 +65,7 @@ public partial class StartOcrService : Node //启动OCR服务
             {
                 if (System.IO.File.Exists(path))
                 {
-                    found = path;                   
+                    found = path;
                     GD.Print($"找到Umi-OCR路径: {found}");
                     break;
                 }
@@ -93,7 +87,7 @@ public partial class StartOcrService : Node //启动OCR服务
                 return;
             }
         }
-        
+
         if (_ocrProcess != null && !_ocrProcess.HasExited)
         {
             _ocrProcess.Kill(); //如果进程已存在且未退出，先终止它
@@ -104,12 +98,11 @@ public partial class StartOcrService : Node //启动OCR服务
         {
             _ocrProcess = new Process(); //创建新进程
             _ocrProcess.StartInfo.FileName = OCRsavedPath; //设置可执行文件路径
-            _ocrProcess.StartInfo.Arguments = "http --port 1224 --lang jpn"; ; //设置脚本路径参数,HTTP服务脚本
+            _ocrProcess.StartInfo.Arguments = "http --port 1224"; ; //设置脚本路径参数,HTTP服务脚本
             _ocrProcess.StartInfo.UseShellExecute = false; //不使用外壳执行
             _ocrProcess.StartInfo.CreateNoWindow = true; //不创建窗口
 
             _ocrProcess.Start(); //启动进程
-            GD.Print("Umi-OCR HTTP服务已隐式启动");
         }
         catch (System.Exception ex)
         {
@@ -145,12 +138,10 @@ public partial class StartOcrService : Node //启动OCR服务
 
     private void OnRequestCompleted(long result, long responseCode, string[] headers, byte[] body) //OCR:HTTP请求完成的回调函数
     {
-        GD.Print($"OCR请求完成，结果代码: {result}, HTTP响应代码: {responseCode}");
         //请求成功
         if (responseCode == 200)
         {
             string jsonString = System.Text.Encoding.UTF8.GetString(body); //将UTF-8字节数组转换为JSON字符串
-            GD.Print("收到OCR响应");
 
             //反序列化JSON响应
             var json = Json.ParseString(jsonString).AsGodotDictionary(); //解析JSON字符串为Godot字典
@@ -165,7 +156,7 @@ public partial class StartOcrService : Node //启动OCR服务
                 string text = itemDict["text"].ToString(); //取出对应键的值,提取文本字段
                 float score = float.Parse(itemDict["score"].ToString()); //提取置信度字段
 
-                if (score > 0.7)
+                if (score > 0.6)
                 {
                     allText.AppendLine(text); //添加高置信度文本
                 }
@@ -185,7 +176,6 @@ public partial class StartOcrService : Node //启动OCR服务
         {
             _ocrProcess.Kill();
             _ocrProcess = null;
-            GD.Print("已终止Umi-OCR进程");
         }
         base._ExitTree(); //调用基类退出处理
     }

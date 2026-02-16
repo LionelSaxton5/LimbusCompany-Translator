@@ -233,13 +233,11 @@ public class OverlayWindow : IDisposable //OCR识别叠加层窗口(最终识别
 
         if (_hWnd == IntPtr.Zero)
         {
-            Godot.GD.PrintErr($"创建窗口失败: {Marshal.GetLastWin32Error()}");
             return false;
         }
 
         DrawTransparentWindow();
         ShowWindow(_hWnd, SW_SHOW);
-        Godot.GD.Print($"叠加层窗口已创建: {_hWnd}");
         return true;
     }
 
@@ -439,8 +437,7 @@ public class OverlayWindow : IDisposable //OCR识别叠加层窗口(最终识别
             DestroyWindow(_hWnd);
             _hWnd = IntPtr.Zero;
             if (_currentInstance == this)
-                _currentInstance = null;
-            Godot.GD.Print("叠加层窗口已销毁");
+                _currentInstance = null;     
         }
     }
 
