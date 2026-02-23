@@ -51,7 +51,6 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 
         if (!string.IsNullOrEmpty(gameInstallPath))
         {
-            GD.Print($"自动检测到游戏路径: {gameInstallPath}");
             try
             {
                 if (SaveManager.Instance != null && SaveManager.Instance.saveData != null)
@@ -80,29 +79,27 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
             ErrorWindow.ShowError("文件操作未成功，无法获取故事文件");
             return;
         }
-        /*
+               
         List<string> storyFiles = FindStoryFiles(selectedChapter, selectedLevel); //查找故事文件
         List<string> mazeFiles = FindMazePlot(selectedChapter, selectedLevel); //查找迷宫剧情文件        
 
         List<string> allFiles = new List<string>();
         allFiles.AddRange(storyFiles);
         allFiles.AddRange(mazeFiles);
-        */
-
+        
         inlineTranslation = GetParent() as InlineTranslation; //获取InlineTranslation节点引用       
-        //inlineTranslation.StartBatchTranslation(allFiles); //加载剧情原文
-
+        inlineTranslation.StartBatchTranslation(allFiles); //加载剧情原文
+        
         skillFile = inlineTranslation.GetNodeOrNull<SkillFile>("SkillFile"); //获取SkillFile节点引用
         if (skillFile != null)
         {
             skillFile.inlineTranslation = inlineTranslation; //将InlineTranslation引用传递给SkillFile
             
-            //skillFile.FindEnemyPassive(selectedChapter); //查找敌方被动技能文件
+            skillFile.FindEnemyPassive(selectedChapter); //查找敌方被动技能文件
             skillFile.FindEnemySkills(selectedChapter); //查找敌方技能文件
-            //skillFile.FindEnemyBubble(selectedChapter); //查找敌方技能气泡文件
-            //skillFile.FindEnemyPanicInfo(selectedChapter); //查找敌方恐慌信息文件
-            skillFile.FildStageNode(selectedChapter); //查找关卡节点名称文件
-            
+            skillFile.FindEnemyBubble(selectedChapter); //查找敌方技能气泡文件
+            skillFile.FindEnemyPanicInfo(selectedChapter); //查找敌方恐慌信息文件
+            skillFile.FildStageNode(selectedChapter); //查找关卡节点名称文件           
         }
         else
         {
@@ -150,7 +147,7 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 
         if (interludeFiles != null)
         {
-            GD.Print($"找到 {interludeFiles.Count} 个间章文件:");            
+            //GD.Print($"找到 {interludeFiles.Count} 个间章文件:");            
         }
         else
         {
@@ -274,8 +271,6 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
             }
         }
 
-        GD.Print($"=== 开始操作文件 ===");
-
         SyncLanguageFiles();
 
         //复制语言文件,改名
@@ -286,7 +281,6 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 
         if (!Directory.Exists(fontDocument)) //检查字体文件夹是否存在
 		{
-			GD.Print("字体文件不存在，开始复制字体文件...");
             string projectRootPath = ProjectSettings.GlobalizePath("res://");
             string fontSourcePath = System.IO.Path.Combine(projectRootPath, "Font");
             string exePath = OS.GetExecutablePath();  //获取Godot可执行文件路径
@@ -410,14 +404,14 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
 				int newChapter = currentNumber / 100; //计算当前章节
 				if (newChapter > chapter)
 				{
-                    GD.Print($"到达下一章节 {newChapter}，停止搜索");
+                    //GD.Print($"到达下一章节 {newChapter}，停止搜索");
                     break;
                 }
 
                 // 防止无限循环
                 if (currentNumber > (chapter * 100 + 60)) // 假设每章最多60关
                 {
-                    GD.Print($"超过最大关卡数，停止搜索");
+                    //GD.Print($"超过最大关卡数，停止搜索");
                     break;
                 }
             }
@@ -581,7 +575,6 @@ public partial class GetGame : Node //获取边狱巴士游戏路径
                 // 防止无限循环
                 if (!CheckNextNumberExists(currentNumber, storyDataPath))
                 {
-                    GD.Print($"未找到下一关卡文件，停止搜索");
                     break;
                 }
 

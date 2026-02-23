@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
@@ -24,6 +25,7 @@ public partial class TranslationSource : Node //翻译源
     private HttpRequest translateHTTPRequest; //微软翻译HTTP请求节点
     private HttpRequest baiduHTTPRequest; //百度翻译HTTP请求节点
     private HttpRequest tengxunHTTPRequest; //腾讯翻译HTTP请求节点
+    private HttpRequest huoshanHTTPRequest; //火山翻译HTTP请求节点
 
     private static TranslationSource _instance; //单例实例
     public static TranslationSource Instance => _instance;
@@ -34,6 +36,7 @@ public partial class TranslationSource : Node //翻译源
         translateHTTPRequest = GetNode<HttpRequest>("TranslateHTTPRequest"); //获取翻译HTTPRequest节点
         baiduHTTPRequest = GetNode<HttpRequest>("BaiduHTTPRequest"); //获取百度翻译HTTPRequest节点
         tengxunHTTPRequest = GetNode<HttpRequest>("TengxunHTTPRequest"); //获取腾讯翻译HTTPRequest节点
+        huoshanHTTPRequest = GetNode<HttpRequest>("HuoshanHTTPRequest"); //获取火山翻译HTTPRequest节点
 
         region = "eastasia"; //默认区域东亚
     }
@@ -105,7 +108,7 @@ public partial class TranslationSource : Node //翻译源
     {
         if (_instance == null)
         {
-            GD.PrintErr("错误：TranslationSource 实例未初始化");
+            //GD.PrintErr("错误：TranslationSource 实例未初始化");
             return;
         }
 
@@ -120,6 +123,10 @@ public partial class TranslationSource : Node //翻译源
         else if (SaveManager.Instance.saveData.isTengxuntranslationEnable) //如果腾讯翻译启用
         {
             TengxuntranslateRequest(text, fromLang, toLang);
+        }
+        else if (SaveManager.Instance.saveData.isHuoshantranslationEnable) //如果火山翻译启用
+        {
+            HuoshantranslateRequest(text, fromLang, toLang);
         }
         else
         {
@@ -230,8 +237,112 @@ public partial class TranslationSource : Node //翻译源
         Error err = tengxunHTTPRequest.RequestRaw(url, headers, HttpClient.Method.Post, bodyBytes);
         if (err != Error.Ok)
         {
-            GD.PrintErr($"腾讯翻译请求发送失败: {err}");
             return;
+        }
+    }
+
+    private void HuoshantranslateRequest(string text, string fromLang, string toLang) //火山翻译请求(OCR)
+    {
+        string tengxunFromLang = MapTOTengxuLangCode(fromLang);
+        string tengxunToLang = MapTOTengxuLangCode(toLang);
+
+        if (string.IsNullOrWhiteSpace(text)) return;
+        if (text.Length == 0) return;
+        if (SaveManager.Instance == null || SaveManager.Instance.saveData == null)
+        {
+            return;
+        }
+
+        string accessKeyId = SaveManager.Instance.saveData.HuoshantranslationUrl;   // 火山 accessKeyId
+        string secretAccessKey = SaveManager.Instance.saveData.HuoshantranslationKey; // 火山 secretAccessKey
+        if (string.IsNullOrWhiteSpace(accessKeyId) || string.IsNullOrWhiteSpace(secretAccessKey))
+        {
+            return;
+        }
+
+        string service = "translate";
+        string region = "cn-north-1";
+        string host = "open.volcengineapi.com";
+        string action = "TranslateText";
+        string version = "2020-06-01";
+        string algorithm = "HMAC-SHA256";
+
+        // 构建请求体
+        var requestBody = new Dictionary<string, object>
+        {
+            { "TargetLanguage", MapToBaiduLangCode(tengxunToLang)},
+            { "SourceLanguage", tengxunFromLang },
+            { "TextList", new[] { text } }
+        };
+
+        string jsonBody = System.Text.Json.JsonSerializer.Serialize(requestBody);
+        byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+
+        // 计算 payload 的 SHA256 原始 bytes，然后用 Base64（用于 X-Content-Sha256 header）
+        byte[] payloadHashBytes;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+        {
+            payloadHashBytes = sha.ComputeHash(bodyBytes);
+        }
+        string payloadHashHex = BitConverter.ToString(payloadHashBytes).Replace("-", "").ToLowerInvariant();
+
+        // 时间与 Scope
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'");
+        string date = timestamp.Substring(0, 8);
+        string credentialScope = $"{date}/{region}/{service}/request";
+
+        // Canonical request
+        var queryParams = new SortedDictionary<string, string>
+        {
+            { "Action", action },
+            { "Version", version }
+        };
+        string canonicalQueryString = string.Join("&", queryParams.Select(kvp => $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
+        string canonicalUri = "/";
+        string canonicalHeaders = $"content-type:application/json\nhost:{host}\nx-content-sha256:{payloadHashHex}\n";
+        string signedHeaders = "content-type;host;x-content-sha256";
+        string canonicalRequest = $"POST\n{canonicalUri}\n{canonicalQueryString}\n{canonicalHeaders}\n{signedHeaders}\n{payloadHashHex}";
+
+
+        // StringToSign
+        string hashedCanonicalRequest = SHA256Hex(canonicalRequest);
+        string stringToSign = $"{algorithm}\n{timestamp}\n{credentialScope}\n{hashedCanonicalRequest}";
+
+        // 计算签名
+        try
+        {
+            byte[] kDate = HmacSHA256(Encoding.UTF8.GetBytes(secretAccessKey), date);
+            byte[] kRegion = HmacSHA256(kDate, region);
+            byte[] kService = HmacSHA256(kRegion, service);
+            byte[] kSigning = HmacSHA256(kService, "request");
+            byte[] signatureBytes = HmacSHA256(kSigning, stringToSign);
+            string signature = BitConverter.ToString(signatureBytes).Replace("-", "").ToLowerInvariant();
+
+            string authorization = $"{algorithm} Credential={accessKeyId}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
+            string url = $"https://{host}/?{canonicalQueryString}";
+
+            string[] headers =
+            {
+                "Content-Type: application/json",
+                "Host: " + host,
+                "X-Content-Sha256: " + payloadHashHex,
+                "X-Date: " + timestamp,
+                "Authorization: " + authorization
+            };
+
+            GD.Print($"[Huoshan][Debug] canonicalRequest:\n{canonicalRequest}");
+            GD.Print($"[Huoshan][Debug] stringToSign:\n{stringToSign}");
+            GD.Print($"[Huoshan][Debug] signature: {signature}");
+
+            Error err = huoshanHTTPRequest.RequestRaw(url, headers, HttpClient.Method.Post, bodyBytes);
+            if (err != Error.Ok)
+            {
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            //GD.PrintErr($"[Huoshan] 签名或请求构建异常: {ex.Message}");
         }
     }
 
@@ -318,8 +429,6 @@ public partial class TranslationSource : Node //翻译源
     //微软翻译请求完成的回调函数
     private void OnTranslateCompleted(long result, long responseCode, string[] headers, byte[] body)
     {
-        //GD.Print($"翻译请求完成，响应代码：{responseCode}");
-
        if (responseCode == 200)
        {
             string jsonString = System.Text.Encoding.UTF8.GetString(body); //将UTF-8字节数组转换为JSON字符串
@@ -344,8 +453,6 @@ public partial class TranslationSource : Node //翻译源
 
     private void OnBaiduTranslateCompleted(long result, long responseCode, string[] headers, byte[] body) //百度翻译请求完成回调
     {
-        //GD.Print($"百度翻译请求完成，响应代码：{responseCode}");
-
         if (responseCode == 200)
             {
             string jsonString = Encoding.UTF8.GetString(body);
@@ -368,15 +475,12 @@ public partial class TranslationSource : Node //翻译源
         else
         { 
             string errorBody = Encoding.UTF8.GetString(body);
-            GD.PrintErr($"百度翻译请求失败，状态码 {responseCode}: {errorBody}");
         }
         
     }
 
     private void OnTengxunTranslateCompleted(long result, long responseCode, string[] headers, byte[] body) //腾讯翻译请求完成回调
     {
-        //GD.Print($"腾讯翻译请求完成，响应代码：{responseCode}");
-        
         if (responseCode == 200)
         {
             string jsonString = Encoding.UTF8.GetString(body);
@@ -394,9 +498,61 @@ public partial class TranslationSource : Node //翻译源
        else
        {
             string errorBody = Encoding.UTF8.GetString(body);
-            GD.PrintErr($"腾讯翻译请求失败，状态码 {responseCode}: {errorBody}");
        }
         
+    }
+
+    private void OnHuoshanTranslateCompleted(long result, long responseCode, string[] headers, byte[] body) //火山翻译请求完成回调
+    {
+        if (responseCode == 200)
+        {
+            string jsonString = Encoding.UTF8.GetString(body);
+            try
+            {
+                var root = Json.ParseString(jsonString).AsGodotDictionary();
+
+                // 优先兼容 TranslationList
+                if (root.ContainsKey("TranslationList"))
+                {
+                    var arr = root["TranslationList"].AsGodotArray();
+                    if (arr.Count > 0)
+                    {
+                        var dict = arr[0].AsGodotDictionary();
+                        if (dict.ContainsKey("Translation"))
+                        {
+                            string translatedText = dict["Translation"].ToString();
+                            ShowTranslationResult(translatedText);
+                            return;
+                        }
+                    }
+                }
+
+                // 兼容 TranslationResults
+                if (root.ContainsKey("TranslationResults"))
+                {
+                    var arr = root["TranslationResults"].AsGodotArray();
+                    if (arr.Count > 0)
+                    {
+                        var dict = arr[0].AsGodotDictionary();
+                        if (dict.ContainsKey("Translation"))
+                        {
+                            string translatedText = dict["Translation"].ToString();
+                            ShowTranslationResult(translatedText);
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                //GD.PrintErr($"[Huoshan] 解析响应异常: {ex.Message} 响应: {Encoding.UTF8.GetString(body)}");
+            }
+        }
+        else
+        {
+            string errorBody = Encoding.UTF8.GetString(body);
+            //GD.PrintErr($"[Huoshan] 请求失败，状态码 {responseCode}: {errorBody}");
+        }
     }
     private void ShowTranslationResult(string translatedText)
     {

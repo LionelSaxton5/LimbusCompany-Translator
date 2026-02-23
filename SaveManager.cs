@@ -40,7 +40,11 @@ public partial class SaveManager : Node
 		public string TengxuntranslationUrl { get; set; } = ""; //腾讯翻译API端点
 		public bool isTengxuntranslationEnable { get; set; } = false; //腾讯翻译是否启用
 
-		public Dictionary<string, string> _persistentCache { get; set; } //持久化缓存，翻译结果会保存在这里面以便下次使用
+		public string HuoshantranslationKey { get; set; } = ""; //火山翻译API密钥
+		public string HuoshantranslationUrl { get; set; } = ""; //火山翻译API端点
+		public bool isHuoshantranslationEnable { get; set; } = false; //火山翻译是否启用
+
+        public Dictionary<string, string> _persistentCache { get; set; } //持久化缓存，翻译结果会保存在这里面以便下次使用
     }
 
 	public SaveData saveData = new SaveData();
@@ -71,7 +75,6 @@ public partial class SaveManager : Node
 		{
 			if (!FileAccess.FileExists(savePath))
 			{
-				GD.Print("未找到保存文件，使用默认配置");
 				return;
 			}
 			using (FileAccess file = FileAccess.Open(savePath, FileAccess.ModeFlags.Read)) //打开文件进行读取
@@ -81,7 +84,6 @@ public partial class SaveManager : Node
 
 				if (string.IsNullOrEmpty(jsonString))
 				{
-					GD.Print("保存文件为空，跳过加载");
 					return;
 				}
 

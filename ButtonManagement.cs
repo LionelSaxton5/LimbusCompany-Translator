@@ -1,5 +1,6 @@
 using Godot;
 using System;
+using System.Threading.Tasks;
 
 public partial class ButtonManagement : VBoxContainer //按钮管理容器
 {
@@ -30,10 +31,12 @@ public partial class ButtonManagement : VBoxContainer //按钮管理容器
 	private Button microsoftButton; //微软设置按钮
 	private Button baiduButton; //百度设置按钮
 	private Button tengxunButton; //腾讯设置按钮
+	private Button huoshanButton; //火山设置按钮
 
     private CheckButton microsoftCheckButton; //微软翻译源启用按钮
 	private CheckButton baiduCheckButton; //百度启用按钮
 	private CheckButton tengxunCheckButton; //腾讯启用按钮
+	private CheckButton huoshanCheckButton; //火山启用按钮
 
     private GetGame getGame; //获取游戏节点
 
@@ -79,11 +82,13 @@ public partial class ButtonManagement : VBoxContainer //按钮管理容器
 		microsoftButton = GetNode<Button>("WarehouseButton/WarehousePanel/MicrosoftButton");
 		baiduButton = GetNode<Button>("WarehouseButton/WarehousePanel/BaiduButton");
 		tengxunButton = GetNode<Button>("WarehouseButton/WarehousePanel/TengxunButton");
+		huoshanButton = GetNode<Button>("WarehouseButton/WarehousePanel/HuoshanButton");
 
         //翻译启动按钮
         microsoftCheckButton = GetNode<CheckButton>("WarehouseButton/WarehousePanel/MicrosoftButton/MicrosoftCheckButton");
 		baiduCheckButton = GetNode<CheckButton>("WarehouseButton/WarehousePanel/BaiduButton/BaiduCheckButton");
 		tengxunCheckButton = GetNode<CheckButton>("WarehouseButton/WarehousePanel/TengxunButton/TengxunCheckButton");
+		huoshanCheckButton = GetNode<CheckButton>("WarehouseButton/WarehousePanel/HuoshanButton/HuoshanCheckButton");
 
         //OCR相关节点
         umiOcrCheckButton = GetNode<CheckButton>("OCRButton/OCRPanel/UmiOcrPortLineEdit/UmiOcrCheckButton");
@@ -120,10 +125,12 @@ public partial class ButtonManagement : VBoxContainer //按钮管理容器
         microsoftCheckButton.ButtonPressed = SaveManager.Instance.saveData.isMicrosofttranslationEnable; //设置微软翻译源启用状态
 		baiduCheckButton.ButtonPressed = SaveManager.Instance.saveData.isBaidutranslationEnable; //设置百度翻译源启用状态
 		tengxunCheckButton.ButtonPressed = SaveManager.Instance.saveData.isTengxuntranslationEnable; //设置腾讯翻译源启用状态
-		skillsEnemyCheckButton.ButtonPressed = SaveManager.Instance.saveData.isSkillsEnemy; //设置主线敌人技能汉化启用状态
+		huoshanCheckButton.ButtonPressed = SaveManager.Instance.saveData.isHuoshantranslationEnable; //设置火山翻译源启用状态
+        skillsEnemyCheckButton.ButtonPressed = SaveManager.Instance.saveData.isSkillsEnemy; //设置主线敌人技能汉化启用状态
 
         umiOcrCheckButton.ButtonPressed = SaveManager.Instance.saveData.isUmiOcrEnable; //设置Umi-OCR启用状态
 		paddOcrCheckButton.ButtonPressed = SaveManager.Instance.saveData.isPaddleOcrEnable; //设置Paddle-OCR启用状态
+		umiOcrPortLineEdit.Text = SaveManager.Instance.saveData.umiOcrPath; //设置Umi-OCR路径输入框初始文本
 
         startPanel.Visible = true;
 		warehousePanel.Visible = false;
@@ -301,17 +308,91 @@ public partial class ButtonManagement : VBoxContainer //按钮管理容器
 		SaveManager.Instance.SaveDataToFile();
     }
 
+	private void OnHuoshanButtonPressed() //火山设置按钮按下事件
+	{
+		apiSettingsWindow = GD.Load<PackedScene>("res://changjing/APISettingsWindow.tscn").Instantiate<Window>();
+		portLineEdit = apiSettingsWindow.GetNode<LineEdit>("Control/PortLineEdit");
+		keyLineEdit = apiSettingsWindow.GetNode<LineEdit>("Control/KeyLineEdit");
+		apiSettingsWindow.Title = "火山翻译API设置";
+		if (portLineEdit != null)
+			portLineEdit.TextChanged += OnHuoshanPortLineEditTextChanged; //连接端口输入框文本变化事件
+		if (keyLineEdit != null)
+			keyLineEdit.TextChanged += OnHuoshanKeyLineEditTextChanged; //连接密钥输入框文本变化事件
+		apiSettingsWindow.CloseRequested += () =>
+		{
+			if (portLineEdit != null)
+				portLineEdit.TextChanged -= OnHuoshanPortLineEditTextChanged;
+			if (keyLineEdit != null)
+				keyLineEdit.TextChanged -= OnHuoshanKeyLineEditTextChanged;
+			// 防止重复释放和悬空引用
+			if (apiSettingsWindow != null && apiSettingsWindow.IsInsideTree())
+				apiSettingsWindow.QueueFree();
+			apiSettingsWindow = null;
+		};
+
+		portLineEdit.Text = SaveManager.Instance.saveData.HuoshantranslationUrl; //设置端口输入框初始文本
+		keyLineEdit.Text = SaveManager.Instance.saveData.HuoshantranslationKey; //设置密钥输入框初始文本
+
+        AddChild(apiSettingsWindow);
+        apiSettingsWindow.Show();
+    }
+
+	private void OnHuoshanPortLineEditTextChanged(string newText) //火山端口输入框文本变化事件
+	{
+		SaveManager.Instance.saveData.HuoshantranslationUrl = newText; //更新保存数据中的端口
+		SaveManager.Instance.SaveDataToFile();
+    }
+	private void OnHuoshanKeyLineEditTextChanged(string newText) //火山密钥输入框文本变化事件
+	{
+		SaveManager.Instance.saveData.HuoshantranslationKey = newText; //更新保存数据中的密钥
+		SaveManager.Instance.SaveDataToFile();
+    }
+
 
     private void OnUmiOcrCheckButtonPressed(bool pressed) //Umi-OCR启用按钮切换事件
 	{
 		SaveManager.Instance.saveData.isUmiOcrEnable = pressed; //更新保存数据中的Umi-OCR启用状态
 		SaveManager.Instance.SaveDataToFile();
+
+		if (pressed)
+		{
+			StartOcrService startOcrService = GetParent().GetNode<StartOcrService>("StartOCRService");
+			if (startOcrService != null)
+			{
+				startOcrService.StartUmiOcrService(); //启动Umi-OCR服务
+			}
+		}
+		else
+		{
+            StartOcrService startOcrService = GetParent().GetNode<StartOcrService>("StartOCRService");
+            if (startOcrService != null)
+			{
+				startOcrService._ExitTree(); //停止Umi-OCR服务
+            }
+		}
     }
 
 	private void OnPaddleOcrCheckButtonPressed(bool pressed) //Paddle-OCR启用按钮切换事件
 	{
 		SaveManager.Instance.saveData.isPaddleOcrEnable = pressed; //更新保存数据中的Paddle-OCR启用状态
 		SaveManager.Instance.SaveDataToFile();
+
+		if (pressed)
+		{
+			PaddleOcrService paddleOcrService = GetParent().GetNode<PaddleOcrService>("PaddleOcrService");
+			if (paddleOcrService != null)
+			{
+				paddleOcrService.InitializeEngine(); //启动Paddle-OCR服务
+			}
+		}
+		else
+		{
+			PaddleOcrService paddleOcrService = GetParent().GetNode<PaddleOcrService>("PaddleOcrService");
+			if (paddleOcrService != null)
+			{
+				paddleOcrService._ExitTree(); //停止Paddle-OCR服务
+            }
+        }
     }
 
 	private void OnUmiOcrPathPortLineEditChanged(string text) //Umi-OCR路径选择按钮按下事件

@@ -32,10 +32,6 @@ public partial class PaddleOcrService : Node
                 _detPath = detPath;
                 _recPath = recPath;
                 _keysPath = keysPath;
-                GD.Print("使用保存的模型路径");
-                GD.Print($"检测模型: {_detPath}");
-                GD.Print($"识别模型: {_recPath}");
-                GD.Print($"字典: {_keysPath}");
             }
             else
             {
@@ -60,13 +56,11 @@ public partial class PaddleOcrService : Node
             if (!string.IsNullOrEmpty(resModels) && Directory.Exists(resModels))
             {
                 modelsDir = resModels;
-                GD.Print("[PaddleOCR] 使用 res://models（开发环境）");
             }
             // 导出后通常会把 models 放在 exe 同目录
             else if (Directory.Exists(exeModels))
             {
                 modelsDir = exeModels;
-                GD.Print("[PaddleOCR] 使用 exe 同目录下的 models（导出环境）");
             }
             // 用户目录下可能是解包后的模型（user://models）
             else if (!string.IsNullOrEmpty(userModels) && Directory.Exists(userModels))
@@ -89,23 +83,13 @@ public partial class PaddleOcrService : Node
                     SaveManager.Instance.SaveDataToFile();
                 }
             }
-            else
-            {
-                GD.PrintErr("未能在候选位置找到 models 文件夹。请把 models 文件夹放到项目根（res://models）用于开发，或放到 exe 同目录用于发布。");
-            }
         }
 
         if (string.IsNullOrWhiteSpace(_detPath) || string.IsNullOrWhiteSpace(_recPath) || string.IsNullOrWhiteSpace(_keysPath)
             || !Directory.Exists(_detPath) || !Directory.Exists(_recPath) || !File.Exists(_keysPath))
         {
-            GD.PrintErr("模型文件缺失，请检查：");
-            GD.PrintErr($"检测模型: {_detPath}");
-            GD.PrintErr($"识别模型: {_recPath}");
-            GD.PrintErr($"字典: {_keysPath}");
-            GD.PrintErr("请确认 models 文件夹结构为：models/det_infer, models/rec_infer, 并包含字典 japan_dict.txt。\n开发时可放在项目根（res://models），发布时放在 exe 同目录。");
             return;
         }
-        GD.Print("模型文件夹和字典文件检查通过");
         
         try
         {            
@@ -119,11 +103,10 @@ public partial class PaddleOcrService : Node
 
             
             _isInitialized = true;
-            GD.Print("PaddleOCR 引擎初始化成功");
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"PaddleOCR 引擎初始化失败: {ex.Message}");
+            ErrorWindow.ShowError($"PaddleOCR 引擎初始化失败: {ex.Message}");
         }
     }
 
@@ -137,7 +120,7 @@ public partial class PaddleOcrService : Node
             // 如果初始化后仍然为null，说明初始化失败，直接返回
             if (_ocrEngine == null)
             {
-                GD.PrintErr("PaddleOCR 引擎初始化失败，无法识别");
+                ErrorWindow.ShowError("PaddleOCR 引擎初始化失败，无法识别");
                 return;
             }
         }

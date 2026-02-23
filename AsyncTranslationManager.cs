@@ -23,16 +23,63 @@ public partial class AsyncTranslationManager : Node
     {
         Microsoft,
         Baidu,
-        Tengxun
+        Tengxun,
+        Huoshan
     }
+    private readonly Dictionary<TranslationService, Queue<long>> _requestTimestamps = new() //每个服务的请求时间戳队列，用于实现滑动窗口限速，确保每秒请求数不超过API限制
+    {   
+        { TranslationService.Microsoft, new Queue<long>() },
+        { TranslationService.Baidu, new Queue<long>() },
+        { TranslationService.Tengxun, new Queue<long>() },
+        { TranslationService.Huoshan, new Queue<long>()}
+    };
+    private readonly Dictionary<TranslationService, int> _maxRequestsPerSecond = new() //每个服务的每秒最大请求数，根据API限制设置，确保不会因为过快请求而被服务器拒绝访问
+    {
+        { TranslationService.Microsoft, 10 }, // 与并发数一致
+        { TranslationService.Baidu, 10 },
+        { TranslationService.Tengxun, 4 },
+        { TranslationService.Huoshan, 10}
+    };
 
-    
     private readonly Dictionary<TranslationService, SemaphoreSlim> _serviceSemaphores = new() //控制并发数量，确保不会超过API限制，实现多路并发提升速度
     {
         {TranslationService.Microsoft, new SemaphoreSlim(10) }, //微软并发10
         {TranslationService.Baidu, new SemaphoreSlim(10) }, //百度并发10
-        {TranslationService.Tengxun, new SemaphoreSlim(5) } //腾讯并发5
+        {TranslationService.Tengxun, new SemaphoreSlim(4) }, //腾讯并发5
+        { TranslationService.Huoshan, new SemaphoreSlim(10)} //火山并发10
     };
+
+    private async Task WaitForRateLimitAsync(TranslationService service)
+    {
+        var q = _requestTimestamps[service];
+        int limit = _maxRequestsPerSecond[service];
+
+        while (true)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // 当前时间戳（毫秒）
+            int waitMs = 0; // 需要等待的毫秒数
+
+            lock (q)
+            {
+                while (q.Count > 0 && now - q.Peek() >= 1000) // 移除1秒前的请求记录，保持队列只包含最近1秒内的请求
+                    q.Dequeue();
+
+                if (q.Count < limit) // 如果当前请求数未达到限制，记录当前请求时间戳并允许请求通过
+                {
+                    q.Enqueue(now);
+                    return; // 允许请求
+                }
+
+                long oldest = q.Peek();
+                waitMs = (int)(1000 - (now - oldest));
+                if (waitMs < 0) waitMs = 0;
+            }
+
+            // 加一点抖动，避免并发突发
+            int jitter = System.Security.Cryptography.RandomNumberGenerator.GetInt32(20, 100);
+            await Task.Delay(waitMs + jitter);
+        }
+    }
 
     // 复用 HttpClient 避免端口耗尽
     private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) }; //设置合理的超时时间
@@ -86,11 +133,9 @@ public partial class AsyncTranslationManager : Node
 
         if (tasksToTranslate.Count == 0)
         {
-            GD.Print("[Cache] 所有文本已在缓存中，部分翻译完成！");
+            GD.Print("所有文本已在缓存中，部分翻译完成！");
             return;
         }
-
-        GD.Print($"[Optimize] 总任务: {totalTasks} | 缓存命中: {currentCompleted} | 需调用API: {tasksToTranslate.Count}");
 
         // ---开始处理 API 翻译逻辑---
 
@@ -102,12 +147,10 @@ public partial class AsyncTranslationManager : Node
             batches.Add(tasksToTranslate.GetRange(i, Math.Min(batchSize, tasksToTranslate.Count - i))); //每个批次包含batchSize个唯一文本的翻译任务
         }
 
-        GD.Print($"[Batch] 开始批量翻译，总任务: {totalTasks}, 总批次: {batches.Count}");
-
         //并行执行批次任务
         var batchTasks = batches.Select(async taskGroup => //每个批次是一个包含多个任务的列表,每个任务对应一个唯一文本
         {
-            int maxRetries = 3; // 最大重试次数
+            int maxRetries = 5; // 最大重试次数
             bool isSuccess = false;
 
             for (int attempt = 1; attempt <= maxRetries; attempt++)
@@ -126,6 +169,8 @@ public partial class AsyncTranslationManager : Node
                 await semaphore.WaitAsync(); //获取对应服务的令牌, 如果没有可用令牌则等待，直到有其他批次释放令牌,确保了不会超过每个服务的并发限制
                 try
                 {
+                    await WaitForRateLimitAsync(activeService); //确保符合API的速率限制，避免被服务器拒绝访问
+
                     // 仅提取这一组中的唯一文本模板进行翻译
                     List<string> uniqueTextsInBatch = taskGroup.Select(g => g.Key).ToList(); //这一批次中唯一的文本列表，发送给翻译API进行批量翻译
                     List<string> translatedResults = await ExecuteBatchTranslation(activeServiceNullable.Value, uniqueTextsInBatch);
@@ -153,12 +198,57 @@ public partial class AsyncTranslationManager : Node
                     }
                     else
                     {
-                        GD.PrintErr($"[Batch] 批次翻译返回数量不匹配或失败。服务: {activeService}, 尝试: {attempt}/{maxRetries}");
+                        // 批量返回不匹配，记录并尝试单条回退
+                        int returned = translatedResults?.Count ?? -1;
+
+                        // 单条回退（逐条翻译）
+                        var fallbackResults = new List<string>(); //存储单条翻译结果的列表
+                        bool fallbackFailed = false;
+                        for (int i = 0; i < uniqueTextsInBatch.Count; i++)
+                        {
+                            string txt = uniqueTextsInBatch[i];
+                            try
+                            {
+                                await WaitForRateLimitAsync(activeService);
+                                string single = await TranslateSingleByService(activeService, txt);
+                                if (single == null)
+                                {
+                                    fallbackFailed = true;
+                                    break;
+                                }
+                                fallbackResults.Add(single);
+                            }
+                            catch (Exception ex)
+                            {
+                                fallbackFailed = true;
+                                break;
+                            }
+                        }
+                        if (!fallbackFailed && fallbackResults.Count == uniqueTextsInBatch.Count)
+                        {
+                            // 回退成功，按单条结果写回
+                            for (int j = 0; j < taskGroup.Count; j++)
+                            {
+                                string translatedTemplate = fallbackResults[j];
+                                var uniqueTextGroupsBatch = taskGroup[j];
+                                string originalTemplate = taskGroup[j].Key;
+
+                                _persistentCache[originalTemplate] = translatedTemplate;
+
+                                foreach (var task in uniqueTextGroupsBatch)
+                                {
+                                    string restored = RestoreTags(translatedTemplate, task.TagMap);
+                                    task.WriteBack?.Invoke(restored);
+                                }
+                            }
+                            isSuccess = true;
+                            break;
+                        }
                     }
+
                 }
                 catch (Exception ex)
                 {
-                    GD.PrintErr($"[Batch] 批次处理异常: {ex.Message} 服务: {activeService}, 尝试: {attempt}/{maxRetries}");
                 }
                 finally
                 {
@@ -168,7 +258,9 @@ public partial class AsyncTranslationManager : Node
                 // 如果失败且还有重试次数，执行指数退避延迟 (1秒, 2秒, 4秒...) 避免被服务器拒绝访问
                 if (!isSuccess && attempt < maxRetries)
                 {
-                    await Task.Delay(1000 * (int)Math.Pow(2, attempt - 1));// 指数退避重试
+                    int baseDelay = 1000;
+                    int delay = baseDelay * (int)Math.Pow(2, attempt - 1) + new Random().Next(100, 300);
+                    await Task.Delay(delay);
                 }
             }
 
@@ -181,7 +273,6 @@ public partial class AsyncTranslationManager : Node
         //等待所有批次任务（包括重试）彻底执行完毕
         await Task.WhenAll(batchTasks);
         SaveCacheToDisk();
-        GD.Print("[Batch] 所有批量翻译任务流程执行完毕。");
     }
 
     //API 选择逻辑
@@ -193,6 +284,7 @@ public partial class AsyncTranslationManager : Node
         if (save.isMicrosofttranslationEnable) candidates.Add(TranslationService.Microsoft);
         if (save.isBaidutranslationEnable) candidates.Add(TranslationService.Baidu);
         if (save.isTengxuntranslationEnable) candidates.Add(TranslationService.Tengxun);
+        if (save.isHuoshantranslationEnable) candidates.Add(TranslationService.Huoshan);
 
         if (candidates.Count == 0) return (null, null);
 
@@ -221,20 +313,32 @@ public partial class AsyncTranslationManager : Node
             TranslationService.Microsoft => await TranslateMicrosoftBatch(texts),
             TranslationService.Baidu => await TranslateBaiduBatch(texts),
             TranslationService.Tengxun => await TranslateTengxunBatch(texts),
+            TranslationService.Huoshan => await TranslateHuoshanBatch(texts),
+            _ => null
+        };
+    }
+
+    private async Task<string> TranslateSingleByService(TranslationService service, string text) //单条翻译执行逻辑
+    {
+        return service switch
+        {
+            TranslationService.Microsoft => await TranslateMicrosoft(text),
+            TranslationService.Baidu => await TranslateBaidu(text),
+            TranslationService.Tengxun => await TranslateTengxun(text),
+            TranslationService.Huoshan => await TranslateHuoshan(text),
             _ => null
         };
     }
 
     // ---微软批量 (原生支持 JSON 对象数组) ---
-    private async Task<List<string>> TranslateMicrosoftBatch(List<string> texts)
+private async Task<List<string>> TranslateMicrosoftBatch(List<string> texts)
     {
         string fromLang = "ja";
         string toLang = "zh-Hans";
-        string region = "eastasia"; // 固定区域，与你的翻译资源所在区域一致
+        string region = "eastasia";
 
         string url = $"{SaveManager.Instance.saveData.MicrosoftranslationUrl}translate?api-version=3.0&from={fromLang}&to={toLang}";
 
-        // 微软格式: [{"Text":"..."}, {"Text":"..."}]
         var body = texts.Select(t => new { Text = t }).ToList();
         string jsonBody = JsonSerializer.Serialize(body);
 
@@ -243,24 +347,46 @@ public partial class AsyncTranslationManager : Node
         request.Headers.Add("Ocp-Apim-Subscription-Key", SaveManager.Instance.saveData.MicrosofttranslationKey);
         request.Headers.Add("Ocp-Apim-Subscription-Region", region);
 
-        var response = await _httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode) return null;
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[MicrosoftBatch] 请求失败: {ex.Message}");
+            return null;
+        }
 
-        var responseJson = await response.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(responseJson);
-        return doc.RootElement.EnumerateArray()
-            .Select(item => item.GetProperty("translations")[0].GetProperty("text").GetString())
-            .ToList();
+        string responseJson = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {           
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseJson);
+            return doc.RootElement.EnumerateArray()
+                .Select(item => item.GetProperty("translations")[0].GetProperty("text").GetString())
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            return null;
+        }
     }
 
-    // ---百度批量 (使用 \n 拼接，带严格行数校验) ---
+    // ---百度批量 (使用 \n 拼接) ---
     private async Task<List<string>> TranslateBaiduBatch(List<string> texts)
     {
         string apiUrl = "https://fanyi-api.baidu.com/api/trans/vip/translate";
         string appId = SaveManager.Instance.saveData.BaidutranslationUrl; //百度翻译应用ID
         string appKey = SaveManager.Instance.saveData.BaidutranslationKey; //百度翻译密钥
 
-        string q = string.Join("\n", texts);
+        var protectedTexts = texts.Select(t => t.Replace("\n", "<BR>")).ToList();
+        string q = string.Join("\n", protectedTexts);
         string salt = new Random().Next(100000, 999999).ToString(); //随机盐值
         string signSource = appId + q + salt + appKey;
         string sign = ComputeMD5HexLower(signSource);
@@ -273,20 +399,26 @@ public partial class AsyncTranslationManager : Node
             new KeyValuePair<string, string>("salt", salt),
             new KeyValuePair<string, string>("sign", sign)
         });
-
-        var response = await _httpClient.PostAsync(apiUrl, content);
-        var json = await response.Content.ReadAsStringAsync();
-
-        using var doc = JsonDocument.Parse(json);
-        if (doc.RootElement.TryGetProperty("trans_result", out var results))
+        try
         {
-            var list = results.EnumerateArray().Select(x => x.GetProperty("dst").GetString()).ToList();
-            // 校验：百度会把两行合成一行，如果行数不对，舍弃，否则会写错位
-            return list.Count == texts.Count ? list : null;
+            var response = await _httpClient.PostAsync(apiUrl, content);
+            var json = await response.Content.ReadAsStringAsync();
+
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("trans_result", out var results))
+            {
+                var list = results.EnumerateArray()
+                     .Select(x => x.GetProperty("dst").GetString().Replace("<BR>", "\n").Replace("<br>", "\n"))
+                     .ToList();
+
+                return list.Count == texts.Count ? list : null;
+            }
         }
+        catch { return null; }
         return null;
     }
 
+    // ---腾讯批量 ---
     private async Task<List<string>> TranslateTengxunBatch(List<string> texts)
     {
         string tengxunFromLang = "ja";
@@ -294,24 +426,20 @@ public partial class AsyncTranslationManager : Node
 
         string secretId = SaveManager.Instance.saveData.TengxuntranslationUrl;
         string secretKey = SaveManager.Instance.saveData.TengxuntranslationKey;
-        string endpoint = "tmt.tencentcloudapi.com";
-        string region = "ap-guangzhou";
+        string host = "tmt.tencentcloudapi.com";
+        string action = "TextTranslateBatch";
+        string version = "2018-03-21";
+        string timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
 
-        var requestParams = new Godot.Collections.Dictionary<string, Variant> //构建请求参数
-        {
-            { "SourceTextList", texts.ToArray() },
-            { "Source", tengxunFromLang },
-            { "Target", tengxunToLang },
-            { "ProjectId", 0 }
-        };
-        string service = "tmt"; //腾讯云翻译服务标识
-        string host = "tmt.tencentcloudapi.com"; // 就近接入域名
-        string action = "TextTranslateBatch"; //批量接口名称
-        string version = "2018-03-21"; //接口版本
-        string timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(); //当前时间戳
+        var requestParams = new Godot.Collections.Dictionary<string, Variant>
+    {
+        { "SourceTextList", texts.ToArray() },
+        { "Source", tengxunFromLang },
+        { "Target", tengxunToLang },
+        { "ProjectId", 0 }
+    };
 
-        string authorization = GenerateTC3Signature(
-        secretId, secretKey, timestamp, service, host, region, action, version, requestParams);
+        string authorization = GenerateTC3Signature(secretId, secretKey, timestamp, "tmt", host, "ap-guangzhou", action, version, requestParams);
 
         string url = $"https://{host}/";
 
@@ -322,19 +450,280 @@ public partial class AsyncTranslationManager : Node
         request.Headers.Add("X-TC-Action", action);
         request.Headers.Add("X-TC-Version", version);
         request.Headers.Add("X-TC-Timestamp", timestamp);
-        request.Headers.Add("X-TC-Region", region);
+        request.Headers.Add("X-TC-Region", "ap-guangzhou");
         request.Headers.TryAddWithoutValidation("Authorization", authorization);
 
-        var response = await _httpClient.SendAsync(request);
-        var responseJson = await response.Content.ReadAsStringAsync();
-
-        using var doc = JsonDocument.Parse(responseJson);
-
-        if (doc.RootElement.GetProperty("Response").TryGetProperty("TargetTextList", out var results))
+        HttpResponseMessage response;
+        try
         {
-            return results.EnumerateArray().Select(x => x.GetString()).ToList();
+            response = await _httpClient.SendAsync(request);
         }
+        catch (Exception ex)
+        {
+            return null;
+        }
+
+        string responseJson = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseJson);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("Response", out var resp))
+            {
+                if (resp.TryGetProperty("Error", out var err))
+                {
+                    GD.PrintErr($"[TengxunBatch] 响应包含 Error: {err}");
+                    return null;
+                }
+                if (resp.TryGetProperty("TargetTextList", out var results))
+                {
+                    return results.EnumerateArray().Select(x => x.GetString()).ToList();
+                }
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return null;
+        }
+    }
+
+    //---火山批量---
+    private async Task<List<string>> TranslateHuoshanBatch(List<string> texts)
+    {
+        if (texts.Count > 16)
+        {
+            GD.PrintErr("[HuoshanBatch] 火山批量最多支持16条文本，当前批次超过限制");
+            return null;
+        }
+
+        string accessKeyId = SaveManager.Instance.saveData.HuoshantranslationUrl;
+        string secretAccessKey = SaveManager.Instance.saveData.HuoshantranslationKey;
+        string service = "translate";
+        string region = "cn-north-1";
+        string host = "open.volcengineapi.com";
+        string action = "TranslateText";
+        string version = "2020-06-01";
+        string algorithm = "HMAC-SHA256";
+
+        // 构建请求参数（注意：火山要求参数按字母顺序排序）
+        var queryParams = new SortedDictionary<string, string>
+        {
+            { "Action", action },
+            { "Version", version }
+        };
+
+        // 构建请求体（JSON）
+        var requestBody = new Dictionary<string, object>
+        {
+            { "TargetLanguage", "zh" },      // 目标语言
+            { "SourceLanguage", "ja" },       // 源语言
+            { "TextList", texts }              // 文本列表
+        };
+
+        string jsonBody = System.Text.Json.JsonSerializer.Serialize(requestBody);
+        byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+        string hashedPayload = SHA256Hex(jsonBody);
+
+        // 计算时间戳
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'");
+        string date = timestamp.Substring(0, 8);
+
+        // 构建规范请求（CanonicalRequest）
+        string httpMethod = "POST";
+        string canonicalUri = "/";
+        string canonicalQueryString = string.Join("&", queryParams.Select(kvp => $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
+
+        string canonicalHeaders = $"content-type:application/json\nhost:{host}\nx-content-sha256:{hashedPayload}\nx-date:{timestamp}\n";
+        string signedHeaders = "content-type;host;x-content-sha256;x-date";
+
+        string canonicalRequest = $"{httpMethod}\n{canonicalUri}\n{canonicalQueryString}\n{canonicalHeaders}\n{signedHeaders}\n{hashedPayload}";
+
+        // 待签名字符串（StringToSign）
+        string credentialScope = $"{date}/{region}/{service}/request";
+        string hashedCanonicalRequest = SHA256Hex(canonicalRequest);
+        string stringToSign = $"{algorithm}\n{timestamp}\n{credentialScope}\n{hashedCanonicalRequest}";
+
+        // 计算签名密钥
+        byte[] kDate = HmacSHA256(Encoding.UTF8.GetBytes(secretAccessKey), date);
+        byte[] kRegion = HmacSHA256(kDate, region);
+        byte[] kService = HmacSHA256(kRegion, service);
+        byte[] kSigning = HmacSHA256(kService, "request");
+        byte[] signatureBytes = HmacSHA256(kSigning, stringToSign);
+        string signature = BitConverter.ToString(signatureBytes).Replace("-", "").ToLowerInvariant();
+
+        // 构造 Authorization 头
+        string authorization = $"{algorithm} Credential={accessKeyId}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
+
+        // 发送请求
+        string url = $"https://{host}/?{canonicalQueryString}";
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+
+        request.Content = new ByteArrayContent(bodyBytes);
+        request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        request.Headers.Host = host;
+        request.Headers.Add("X-Content-Sha256", hashedPayload);
+        request.Headers.Add("X-Date", timestamp);
+        request.Headers.TryAddWithoutValidation("Authorization", authorization);
+
+        try
+        {
+            var response = await _httpClient.SendAsync(request);
+            string responseJson = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                GD.PrintErr($"[HuoshanBatch] 请求失败: {(int)response.StatusCode} - {responseJson}");
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(responseJson);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("ResponseMetadata", out var meta) &&
+                meta.TryGetProperty("Error", out var error))
+            {
+                GD.PrintErr($"[HuoshanBatch] 火山错误: {error}");
+                return null;
+            }
+
+            if (root.TryGetProperty("TranslationList", out var results) && results.ValueKind == JsonValueKind.Array)
+            {
+                return results.EnumerateArray()
+                    .Select(r => r.GetProperty("Translation").GetString())
+                    .ToList();
+            }
+
+            GD.PrintErr($"[HuoshanBatch] 未找到 TranslationList，响应: {responseJson}");
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[HuoshanBatch] 异常: {ex.Message}");
+            return null;
+        }
+
         return null;
+    }
+
+
+    //辅助方法
+    private static string ComputeMD5HexLower(string input) //计算MD5哈希值并返回小写十六进制字符串
+    {
+        using (var md5 = MD5.Create())
+        {
+            byte[] hash = md5.ComputeHash(Encoding.UTF8.GetBytes(input));
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+        }
+    }
+
+    private string GenerateTC3Signature(
+    string secretId, string secretKey, string timestamp,
+    string service, string host, string region, string action, string version,
+    Godot.Collections.Dictionary<string, Variant> requestParams)
+    {
+        //拼接规范请求字符串（CanonicalRequest）
+        string httpRequestMethod = "POST";
+        string canonicalUri = "/";
+        string canonicalQueryString = "";
+        string canonicalHeaders =
+            "content-type:application/json; charset=utf-8\n" +
+            "host:" + host + "\n";
+        string signedHeaders = "content-type;host";
+
+        //请求体哈希（SHA256）
+        string payload = Json.Stringify(requestParams);
+        string hashedRequestPayload = SHA256Hex(payload);
+        string canonicalRequest =
+            httpRequestMethod + "\n" +
+            canonicalUri + "\n" +
+            canonicalQueryString + "\n" +
+            canonicalHeaders + "\n" +
+            signedHeaders + "\n" +
+            hashedRequestPayload;
+
+        //拼接待签名字符串（StringToSign）
+        string algorithm = "TC3-HMAC-SHA256";
+        string requestTimestamp = timestamp;
+        string date = DateTimeOffset.FromUnixTimeSeconds(long.Parse(timestamp)).UtcDateTime.ToString("yyyy-MM-dd");
+        string credentialScope = $"{date}/{service}/tc3_request";
+        string hashedCanonicalRequest = SHA256Hex(canonicalRequest);
+        string stringToSign =
+            algorithm + "\n" +
+            requestTimestamp + "\n" +
+            credentialScope + "\n" +
+            hashedCanonicalRequest;
+
+        //计算签名
+        byte[] secretDate = HmacSHA256(Encoding.UTF8.GetBytes("TC3" + secretKey), date);
+        byte[] secretService = HmacSHA256(secretDate, service);
+        byte[] secretSigning = HmacSHA256(secretService, "tc3_request");
+        byte[] signatureBytes = HmacSHA256(secretSigning, stringToSign);
+        string signature = BitConverter.ToString(signatureBytes).Replace("-", "").ToLower();
+
+        //构造 Authorization 头
+        string authorization =
+            $"{algorithm} Credential={secretId}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
+
+        return authorization;
+    }
+
+    // 辅助函数：SHA256 十六进制
+    private string SHA256Hex(string data)
+    {
+        using (SHA256 sha256 = SHA256.Create())
+        {
+            byte[] hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(data));
+            return BitConverter.ToString(hash).Replace("-", "").ToLower();
+        }
+    }
+
+    // 辅助函数：HMAC-SHA256
+    private byte[] HmacSHA256(byte[] key, string data)
+    {
+        using (HMACSHA256 hmac = new HMACSHA256(key))
+        {
+            return hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
+        }
+    }
+
+    private string RestoreTags(string translatedText, Dictionary<string, string> tagMap) //将翻译结果中的占位符（如TAG0）替换回原始标签（如[烧伤]），支持各种变体形式
+    {
+        if (string.IsNullOrEmpty(translatedText)) return translatedText ?? "";
+        if (tagMap == null || tagMap.Count == 0) return translatedText;
+
+        foreach (var kvp in tagMap)
+        {
+            string id = kvp.Key; // 这里获取到的是纯数字 "0", "1"
+            string originalTag = kvp.Value; // 这里是 "[Laceration]" 或 "<color=red>"
+
+            //完美匹配：[TAG0], 【TAG0】, [tag 0 ], { { tag_0} },“标签”、“标记” TAG0 等所有变体
+            string pattern = $@"([\[【\{{<（@]*\s*(?:[Tt][Aa][Gg]|标签|标记)[_\s]*{id}\s*[\]】\}}>）@]*)";
+            translatedText = Regex.Replace(translatedText, pattern, originalTag);
+        }
+        return translatedText;
+    }
+
+    private void SaveCacheToDisk()
+    {
+        // 将 ConcurrentDictionary 转回普通的 Dictionary 给 SaveManager
+        SaveManager.Instance.saveData._persistentCache = new Dictionary<string, string>(_persistentCache);
+        SaveManager.Instance.SaveDataToFile();
+    }
+
+    private string EscapeJson(string text)
+    {
+        return text.Replace("\\", "\\\\")
+                   .Replace("\"", "\\\"")
+                   .Replace("\n", "\\n")
+                   .Replace("\r", "\\r")
+                   .Replace("\t", "\\t");
     }
 
 
@@ -453,113 +842,116 @@ public partial class AsyncTranslationManager : Node
         return null;
     }
 
-    //辅助方法
-    private static string ComputeMD5HexLower(string input) //计算MD5哈希值并返回小写十六进制字符串
+    //火山翻译
+    private async Task<string> TranslateHuoshan(string text)
     {
-        using (var md5 = MD5.Create())
-        {
-            byte[] hash = md5.ComputeHash(Encoding.UTF8.GetBytes(input));
-            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
-        }
-    }
+        if (string.IsNullOrWhiteSpace(text)) return null;
 
-    private string GenerateTC3Signature(
-    string secretId, string secretKey, string timestamp,
-    string service, string host, string region, string action, string version,
-    Godot.Collections.Dictionary<string, Variant> requestParams)
-    {
-        //拼接规范请求字符串（CanonicalRequest）
-        string httpRequestMethod = "POST";
+        var accessKeyId = SaveManager.Instance.saveData.HuoshantranslationUrl;
+        var secretAccessKey = SaveManager.Instance.saveData.HuoshantranslationKey;
+        if (string.IsNullOrWhiteSpace(accessKeyId) || string.IsNullOrWhiteSpace(secretAccessKey))
+        {
+            GD.PrintErr("[Huoshan] 未配置 AccessKeyId/SecretAccessKey");
+            return null;
+        }
+
+        string service = "translate";
+        string region = "cn-north-1";
+        string host = "open.volcengineapi.com";
+        string action = "TranslateText";
+        string version = "2020-06-01";
+        string algorithm = "HMAC-SHA256";
+
+        var queryParams = new SortedDictionary<string, string>
+        {
+            { "Action", action },
+            { "Version", version }
+        };
+
+        var requestBody = new Dictionary<string, object>
+        {
+            { "TargetLanguage", "zh"},
+            { "SourceLanguage", "ja" },
+            { "TextList", new[] { text } }
+        };
+
+        string jsonBody = System.Text.Json.JsonSerializer.Serialize(requestBody);
+        byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+        string payloadHashHex = SHA256Hex(jsonBody);
+
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'");
+        string date = timestamp.Substring(0, 8);
+        string credentialScope = $"{date}/{region}/{service}/request";
+
+        // Canonical request
+        string canonicalQueryString = string.Join("&", queryParams.Select(kvp => $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
         string canonicalUri = "/";
-        string canonicalQueryString = "";
-        string canonicalHeaders =
-            "content-type:application/json; charset=utf-8\n" +  
-            "host:" + host + "\n";
-        string signedHeaders = "content-type;host";
 
-        //请求体哈希（SHA256）
-        string payload = Json.Stringify(requestParams);
-        string hashedRequestPayload = SHA256Hex(payload);
-        string canonicalRequest =
-            httpRequestMethod + "\n" +
-            canonicalUri + "\n" +
-            canonicalQueryString + "\n" +
-            canonicalHeaders + "\n" +
-            signedHeaders + "\n" +
-            hashedRequestPayload;
+        string canonicalHeaders = $"content-type:application/json\nhost:{host}\nx-content-sha256:{payloadHashHex}\nx-date:{timestamp}\n";
+        string signedHeaders = "content-type;host;x-content-sha256;x-date";
 
-        //拼接待签名字符串（StringToSign）
-        string algorithm = "TC3-HMAC-SHA256";
-        string requestTimestamp = timestamp;
-        string date = DateTimeOffset.FromUnixTimeSeconds(long.Parse(timestamp)).UtcDateTime.ToString("yyyy-MM-dd");
-        string credentialScope = $"{date}/{service}/tc3_request";
+        string canonicalRequest = $"POST\n{canonicalUri}\n{canonicalQueryString}\n{canonicalHeaders}\n{signedHeaders}\n{payloadHashHex}";
+
         string hashedCanonicalRequest = SHA256Hex(canonicalRequest);
-        string stringToSign =
-            algorithm + "\n" +
-            requestTimestamp + "\n" +
-            credentialScope + "\n" +
-            hashedCanonicalRequest;
+        string stringToSign = $"{algorithm}\n{timestamp}\n{credentialScope}\n{hashedCanonicalRequest}";
 
-        //计算签名
-        byte[] secretDate = HmacSHA256(Encoding.UTF8.GetBytes("TC3" + secretKey), date);
-        byte[] secretService = HmacSHA256(secretDate, service);
-        byte[] secretSigning = HmacSHA256(secretService, "tc3_request");
-        byte[] signatureBytes = HmacSHA256(secretSigning, stringToSign);
-        string signature = BitConverter.ToString(signatureBytes).Replace("-", "").ToLower();
-
-        //构造 Authorization 头
-        string authorization =
-            $"{algorithm} Credential={secretId}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
-
-        return authorization;
-    }
-
-    // 辅助函数：SHA256 十六进制
-    private string SHA256Hex(string data)
-    {
-        using (SHA256 sha256 = SHA256.Create())
+        try
         {
-            byte[] hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(data));
-            return BitConverter.ToString(hash).Replace("-", "").ToLower();
-        }
-    }
+            byte[] kDate = HmacSHA256(Encoding.UTF8.GetBytes(secretAccessKey), date);
+            byte[] kRegion = HmacSHA256(kDate, region);
+            byte[] kService = HmacSHA256(kRegion, service);
+            byte[] kSigning = HmacSHA256(kService, "request");
+            byte[] signatureBytes = HmacSHA256(kSigning, stringToSign);
+            string signature = BitConverter.ToString(signatureBytes).Replace("-", "").ToLowerInvariant();
 
-    // 辅助函数：HMAC-SHA256
-    private byte[] HmacSHA256(byte[] key, string data)
-    {
-        using (HMACSHA256 hmac = new HMACSHA256(key))
+            string authorization = $"{algorithm} Credential={accessKeyId}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
+
+            string url = $"https://{host}/?{canonicalQueryString}";
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+
+            request.Content = new ByteArrayContent(bodyBytes);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            request.Headers.Host = host;
+            request.Headers.Add("X-Content-Sha256", payloadHashHex);
+            request.Headers.Add("X-Date", timestamp);
+            request.Headers.TryAddWithoutValidation("Authorization", authorization);
+
+            var response = await _httpClient.SendAsync(request);
+            string responseJson = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                GD.PrintErr($"[Huoshan] 单条翻译失败: {(int)response.StatusCode} {response.StatusCode} 响应: {responseJson}");
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(responseJson);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("ResponseMetadata", out var meta) &&
+                meta.TryGetProperty("Error", out var error))
+            {
+                GD.PrintErr($"[Huoshan] 火山错误: {error}");
+                return null;
+            }
+
+            if (root.TryGetProperty("TranslationList", out var listNode) && listNode.ValueKind == JsonValueKind.Array && listNode.GetArrayLength() > 0)
+            {
+                var firstObj = listNode[0];
+                if (firstObj.TryGetProperty("Translation", out var t) && t.ValueKind == JsonValueKind.String)
+                {
+                    return t.GetString();
+                }
+            }
+
+            GD.PrintErr($"[Huoshan] 无法解析单条翻译响应: {responseJson}");
+            return null;
+        }
+        catch (Exception ex)
         {
-            return hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
+            GD.PrintErr($"[Huoshan] 单条翻译异常: {ex.Message}");
+            return null;
         }
-    }
-
-    private string RestoreTags(string translatedText, Dictionary<string, string> tagMap)
-    {
-        foreach (var kvp in tagMap)
-        {
-            string id = kvp.Key; // 这里获取到的是纯数字 "0", "1"
-            string originalTag = kvp.Value; // 这里是 "[Laceration]" 或 "<color=red>"
-
-            //完美匹配：[TAG0], 【TAG0】, [tag 0 ], { { tag_0} }, TAG0 等所有变体
-            string pattern = $@"([\[【\{{<（]*\s*[Tt][Aa][Gg][_\s]*{id}\s*[\]】\}}>）]*)"; 
-            translatedText = Regex.Replace(translatedText, pattern, originalTag);
-        }
-        return translatedText;
-    }
-
-    private void SaveCacheToDisk()
-    {
-        // 将 ConcurrentDictionary 转回普通的 Dictionary 给 SaveManager
-        SaveManager.Instance.saveData._persistentCache = new Dictionary<string, string>(_persistentCache);
-        SaveManager.Instance.SaveDataToFile();
-    }
-
-    private string EscapeJson(string text)
-    {
-        return text.Replace("\\", "\\\\")
-                   .Replace("\"", "\\\"")
-                   .Replace("\n", "\\n")
-                   .Replace("\r", "\\r")
-                   .Replace("\t", "\\t");
     }
 }

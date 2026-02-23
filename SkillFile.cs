@@ -448,7 +448,7 @@ public partial class SkillFile : Node //技能文件
         int index = 0; // 用于生成占位符的索引
         string result = regex.Replace(text, match =>
         {
-            string placeholder = $"[TAG{index}]"; // 占位符格式：{{TAG0}}
+            string placeholder = $"@@TAG{index}@@"; // 占位符格式：{{TAG0}}
             tagMap[index.ToString()] = match.Value; //match代表当前找到的标签,将占位符与原标签的映射存储到字典中
             index++;
             return placeholder; // 替换为占位符

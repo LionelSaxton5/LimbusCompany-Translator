@@ -114,7 +114,6 @@ public partial class TranslationManager : Node //翻译管理器(集成)
         var windowScene = GD.Load<PackedScene>("res://changjing/TranslationWindow.tscn");
         if (windowScene == null)
         {
-            GD.PrintErr("错误：无法加载 TranslationWindow 场景！");
             return null;
         }
 
@@ -127,10 +126,6 @@ public partial class TranslationManager : Node //翻译管理器(集成)
         if (translationResult != null)
         {
             translationResult._TranslateButtonPressed += OnCaptureHotkeyPressed; //订阅翻译按钮事件
-        }
-        else
-        {
-            GD.PrintErr("错误：无法找到 TranslationResult 节点！");
         }
         return translationWindow;
     }
@@ -169,6 +164,11 @@ public partial class TranslationManager : Node //翻译管理器(集成)
     public void OnTengxunCheckButtonToggled(bool pressed) //腾讯翻译启用切换
     {
         SaveManager.Instance.saveData.isTengxuntranslationEnable = pressed;
+        SaveManager.Instance.SaveDataToFile();
+    }
+    public void OnHuoshanCheckButtonToggled(bool pressed) //火山翻译启用切换
+    {
+        SaveManager.Instance.saveData.isHuoshantranslationEnable = pressed;
         SaveManager.Instance.SaveDataToFile();
     }
 }

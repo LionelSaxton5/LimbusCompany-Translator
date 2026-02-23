@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 /// <summary>
 /// Windows API 叠加层窗口 - 用于绘制OCR识别框
-/// 特点：不显示在任务栏、几乎透明背景、只显示边框、可拖动
+/// 不显示在任务栏、几乎透明背景、只显示边框、可拖动
 /// </summary>
 public class OverlayWindow : IDisposable //OCR识别叠加层窗口(最终识别框)
 {

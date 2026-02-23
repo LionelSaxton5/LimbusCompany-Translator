@@ -71,15 +71,15 @@ public partial class InlineTranslation : Node //内嵌式翻译
 
         //调用并行管理器,传入任务列表和一个回调来更新已完成任务数
         await AsyncTranslationManager.Instance.ProcessTasksParallel(
-            tasksToProcess, 25, (done, total) => 
+            tasksToProcess, 16, (done, total) => 
             {
                 completedTasks = done;
                 CallDeferred(nameof(TriggerProgress), done, total);
             }); //等待所有任务完成
 
-        FlushCacheToDisk();
+        SaveAllTranslatedFiles();
+
         isProcessing = false;
-        GD.Print("[Parallel] 所有任务处理完毕并已保存。");
     }
 
     public void TriggerProgress(int done, int total)
@@ -113,6 +113,37 @@ public partial class InlineTranslation : Node //内嵌式翻译
         }
     }
 
+    public void SaveAllTranslatedFiles()
+    {
+        lock (_fileLock)
+        {
+            foreach (var kvp in _jsonCache)
+            {
+                string filePath = kvp.Key;
+                Godot.Collections.Dictionary jsonDict = kvp.Value;
+
+                try
+                {
+                    // 转回带缩进的 JSON
+                    string jsonString = Godot.Json.Stringify(jsonDict, "\t");
+                    
+                    // 保留你原先很好的逻辑：修复Godot Json化后把整数变成 X.0 的毛病
+                    jsonString = Regex.Replace(jsonString, @"(\d+)\.0(?!\d)", "$1");
+
+                    // 覆盖写入
+                    System.IO.File.WriteAllText(filePath, jsonString, Encoding.UTF8);
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr($"保存文件失败 [{filePath}]: {ex.Message}");
+                }
+            }
+
+            _jsonCache.Clear(); 
+        }
+    }
+
+
     //辅助方法
     //获取或加载JSON到缓存
     private Godot.Collections.Dictionary GetOrLoadJson(string filePath)
@@ -126,31 +157,6 @@ public partial class InlineTranslation : Node //内嵌式翻译
         return jsonDict;
     }
 
-    //最后一次性写入硬盘
-    private void FlushCacheToDisk()
-    {
-        lock (_fileLock)
-        {
-            GD.Print("所有翻译任务完成，开始统一将缓存写入硬盘...");
-            foreach (var kvp in _jsonCache)
-            {
-                try
-                {
-                    string jsonString = Json.Stringify(kvp.Value);
-                    jsonString = Regex.Replace(jsonString, @"(\d+)\.0(?!\d)", "$1");
-                    File.WriteAllText(kvp.Key, jsonString, Encoding.UTF8);
-                }
-                catch (Exception ex)
-                {
-                    GD.PrintErr($"保存文件失败 [{kvp.Key}]: {ex.Message}");
-                }
-            }
-            _jsonCache.Clear(); // 写入完成后清空缓存
-            GD.Print("全部写入完毕！");
-        }
-    }
-
-
     //写回文件方法
     private void WriteTranslationToFile(string filePath, int elementIndex, string translatedText) //将翻译结果写回文件
     {
@@ -158,7 +164,6 @@ public partial class InlineTranslation : Node //内嵌式翻译
         {
             if (string.IsNullOrEmpty(translatedText))
             {
-                GD.PrintErr($"译文为空，跳过写入：{filePath} [{elementIndex}]");
                 return;
             }
 

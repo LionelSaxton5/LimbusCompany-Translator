@@ -128,7 +128,7 @@ public partial class TranslationResult : Control //翻译结果显示
         }
         else
         {
-            GD.PrintErr("未找到 TranslationManager 节点");
+            //GD.PrintErr("未找到 TranslationManager 节点");
         }
     }
 

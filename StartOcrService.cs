@@ -27,20 +27,19 @@ public partial class StartOcrService : Node //启动OCR服务
                 var response = await client.GetAsync("http://127.0.0.1:1224/api/ocr"); //尝试连接OCR服务
                 if (response.IsSuccessStatusCode)
                 {
-                    GD.Print("Umi-OCR服务已在运行，无需启动新进程");
                     return; //服务已在运行，直接返回
                 }
             }
             catch
             {
-                GD.Print("Umi-OCR服务未运行，准备启动新进程");
+                //GD.Print("Umi-OCR服务未运行，准备启动新进程");
             }
         }
 
         string OCRsavedPath = SaveManager.Instance.saveData.umiOcrPath; //从配置中获取保存的Umi-OCR路径
         if (!string.IsNullOrWhiteSpace(OCRsavedPath) && System.IO.File.Exists(OCRsavedPath)) //如果路径有效且文件存在
         {
-            GD.Print($"使用保存的 Umi-OCR 路径: '{OCRsavedPath}'");
+            //GD.Print($"使用保存的 Umi-OCR 路径: '{OCRsavedPath}'");
         }
         else
         {
@@ -66,7 +65,6 @@ public partial class StartOcrService : Node //启动OCR服务
                 if (System.IO.File.Exists(path))
                 {
                     found = path;
-                    GD.Print($"找到Umi-OCR路径: {found}");
                     break;
                 }
             }
@@ -91,7 +89,6 @@ public partial class StartOcrService : Node //启动OCR服务
         if (_ocrProcess != null && !_ocrProcess.HasExited)
         {
             _ocrProcess.Kill(); //如果进程已存在且未退出，先终止它
-            GD.Print("已终止旧的Umi-OCR进程");
         }
 
         try
@@ -106,8 +103,7 @@ public partial class StartOcrService : Node //启动OCR服务
         }
         catch (System.Exception ex)
         {
-            GD.PrintErr($"错误：无法启动Umi-OCR服务 - {ex.Message}");
-            GD.PrintErr($"请检查路径是否正确: {OCRsavedPath}");
+            ErrorWindow.ShowError($"请检查路径是否正确: {OCRsavedPath}");
         }
     }
 
